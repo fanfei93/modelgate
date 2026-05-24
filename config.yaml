@@ -1,0 +1,16 @@
+server:
+  port: 8080
+  debug_mode: true
+  static_dir: web/dist   # 前端构建产物目录
+
+jwt:
+  secret: "modelgate-dev-secret-change-in-production"
+  expire_hours: 72
+
+database:
+  driver: mysql
+  dsn: "root:123456@tcp(localhost:3306)/modelgate?charset=utf8mb4&parseTime=True&loc=Local"
+
+new_api:
+  base_url: "http://localhost:3000"
+  admin_key: "6f4ef279609eff8802a9d74726b5b4c4"

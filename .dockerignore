@@ -1,0 +1,28 @@
+# Node
+web/node_modules/
+
+# Build output (will be rebuilt in container)
+modelgate-server
+web/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Environment
+.env
+.env.local
+
+# Docs & misc
+openspec/
+*.md
