@@ -34,6 +34,16 @@ function OwnerView({ team, slug, user, fetchTeam }: {
   const [quotaInfo, setQuotaInfo] = useState<QuotaInfo | null>(null);
   const [quotaInfoLoading, setQuotaInfoLoading] = useState(false);
 
+  // 拥有者自己的使用记录
+  const [myQuotaInfo, setMyQuotaInfo] = useState<QuotaInfo | null>(null);
+  const [myQuotaLoading, setMyQuotaLoading] = useState(true);
+  const [myLogs, setMyLogs] = useState<LogItem[]>([]);
+  const [myLogsLoading, setMyLogsLoading] = useState(true);
+  const [myLogsError, setMyLogsError] = useState('');
+
+  // 找到拥有者自己的成员记录
+  const myMember = team.members?.find((m) => m.user_id === user?.id);
+
   const totalAllocated = team.members?.reduce((sum, m) => sum + (m.quota_allocated || 0), 0) || 0;
 
   const handleAddMember = async (e: React.FormEvent) => {
@@ -115,6 +125,36 @@ function OwnerView({ team, slug, user, fetchTeam }: {
     } finally { setQuotaLoading(false); }
   };
 
+  // 获取自己的额度和使用日志
+  const fetchMyQuota = useCallback(async () => {
+    if (!myMember || !slug) return;
+    setMyQuotaLoading(true);
+    try {
+      const res = await teamApi.getMemberQuota(slug, myMember.id);
+      setMyQuotaInfo(res.data.data || null);
+    } catch { /* ignore */ }
+    finally { setMyQuotaLoading(false); }
+  }, [slug, myMember?.id]);
+
+  const fetchMyLogs = useCallback(async () => {
+    if (!slug) return;
+    setMyLogsLoading(true);
+    setMyLogsError('');
+    try {
+      const res = await teamApi.getMemberLogs(slug);
+      setMyLogs(res.data.data || []);
+    } catch (err: unknown) {
+      const ae = err as { response?: { data?: { error?: string } } };
+      setMyLogsError(ae?.response?.data?.error || '获取日志失败');
+    } finally { setMyLogsLoading(false); }
+  }, [slug]);
+
+  useEffect(() => { fetchMyQuota(); fetchMyLogs(); }, [fetchMyQuota, fetchMyLogs]);
+
+  const myAllocated = myQuotaInfo?.quota_allocated || myMember?.quota_allocated || 0;
+  const myUsed = myQuotaInfo?.quota_used || myMember?.quota_used || 0;
+  const myRemain = myQuotaInfo?.quota_remain || 0;
+
   return (
     <div>
       {/* Stats */}
@@ -194,17 +234,15 @@ function OwnerView({ team, slug, user, fetchTeam }: {
                   </td>
                   <td className="px-5 py-4 text-right">
                     <div className="flex items-center justify-end gap-2">
+                      <button onClick={() => handleOpenQuota(m.id, m.user?.username || `#${m.id}`)}
+                        className="text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors">设置额度</button>
                       {m.role !== 'owner' && (
-                        <>
-                          <button onClick={() => handleOpenQuota(m.id, m.user?.username || `#${m.id}`)}
-                            className="text-xs text-blue-600 hover:text-blue-800 font-medium transition-colors">设置额度</button>
-                          <button onClick={() => handleRemoveMember(m.id)}
-                            className="p-1.5 text-gray-400 hover:text-red-500 transition-colors" title="移除成员">
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                            </svg>
-                          </button>
-                        </>
+                        <button onClick={() => handleRemoveMember(m.id)}
+                          className="p-1.5 text-gray-400 hover:text-red-500 transition-colors" title="移除成员">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.5} viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                          </svg>
+                        </button>
                       )}
                     </div>
                   </td>
@@ -340,6 +378,78 @@ function OwnerView({ team, slug, user, fetchTeam }: {
                 </div>
               )}
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* 我的额度 */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 mt-6">
+        <h3 className="text-lg font-bold text-gray-900 mb-4">我的额度</h3>
+        {myQuotaLoading ? (
+          <div className="flex justify-center py-4"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" /></div>
+        ) : (
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-gray-50 rounded-lg p-4 text-center">
+              <p className="text-xs text-gray-500 mb-1">已分配</p>
+              <p className="text-xl font-bold text-gray-900">¥{formatBalance(myAllocated)}</p>
+            </div>
+            <div className="bg-orange-50 rounded-lg p-4 text-center">
+              <p className="text-xs text-gray-500 mb-1">已使用</p>
+              <p className="text-xl font-bold text-orange-600">¥{formatBalance(myUsed)}</p>
+            </div>
+            <div className="bg-green-50 rounded-lg p-4 text-center">
+              <p className="text-xs text-gray-500 mb-1">剩余</p>
+              <p className="text-xl font-bold text-green-600">¥{formatBalance(myRemain)}</p>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 使用日志 */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 mt-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-gray-900">使用日志</h3>
+          <button onClick={fetchMyLogs} disabled={myLogsLoading}
+            className="text-xs text-blue-600 hover:text-blue-800 font-medium disabled:opacity-50">
+            刷新
+          </button>
+        </div>
+
+        {myLogsLoading ? (
+          <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" /></div>
+        ) : myLogsError ? (
+          <div className="bg-red-50 border border-red-200 text-red-600 rounded-lg px-4 py-2.5 text-sm">{myLogsError}</div>
+        ) : myLogs.length === 0 ? (
+          <div className="text-center py-8 text-gray-400 text-sm">暂无使用记录</div>
+        ) : (
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr className="border-b border-gray-200">
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">时间</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">模型</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Token 消耗</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">费用</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {myLogs.map((log) => (
+                  <tr key={log.id} className="hover:bg-gray-50/50">
+                    <td className="px-4 py-3 text-gray-600">{formatTime(log.created_at)}</td>
+                    <td className="px-4 py-3">
+                      <span className="text-sm font-medium text-gray-900">{log.model_name || '-'}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      <span className="text-xs mr-1">P:</span>{log.prompt_tokens}
+                      <span className="text-xs mx-1">C:</span>{log.completion_tokens}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <span className="text-sm font-medium text-gray-900">¥{formatBalance(log.quota)}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

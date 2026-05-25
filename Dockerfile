@@ -5,7 +5,7 @@ FROM node:20-alpine AS frontend-builder
 
 WORKDIR /app/web
 COPY web/package*.json ./
-RUN npm ci
+RUN npm install
 COPY web/ ./
 RUN npm run build
 
@@ -15,6 +15,8 @@ RUN npm run build
 FROM golang:1.22-alpine AS backend-builder
 
 RUN apk add --no-cache gcc musl-dev
+
+ENV GOPROXY=https://goproxy.cn,direct
 
 WORKDIR /app
 COPY go.mod go.sum ./

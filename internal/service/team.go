@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -14,6 +15,10 @@ import (
 	"github.com/modelgate/internal/repository"
 	"gorm.io/gorm"
 )
+
+// defaultQuotaPerUnit new-api 默认的 QuotaPerUnit 值（$1 = 500,000 tokens）
+// 实际值会通过 /api/status 接口动态获取
+const defaultQuotaPerUnit = 500_000.0
 
 var (
 	ErrTeamNotFound          = errors.New("团队不存在")
@@ -31,7 +36,38 @@ type TeamService struct {
 	invitationRepo *repository.InvitationRepo
 	quotaAllocRepo *repository.QuotaAllocationRepo
 	newAPIClient   *newapi.Client
+	emailService   *EmailService
+	baseURL        string // 前端地址，用于生成邀请链接
 	db             *gorm.DB
+
+	// quotaPerUnit new-api 的 token/美元 换算因子，从 /api/status 动态获取
+	// quotaTokensPerCent = quotaPerUnit / 100，即 modelgate "分" 对应的 token 数
+	quotaPerUnit float64
+}
+
+// QuotaTokensPerCent 返回 modelgate "分" → new-api token 的换算因子
+func (s *TeamService) quotaTokensPerCent() int64 {
+	if s.quotaPerUnit <= 0 {
+		return int64(defaultQuotaPerUnit / 100) // fallback: 5000
+	}
+	return int64(s.quotaPerUnit / 100)
+}
+
+// InitQuotaPerUnit 从 new-api /api/status 接口获取 QuotaPerUnit 值
+func (s *TeamService) InitQuotaPerUnit() {
+	status, err := s.newAPIClient.GetStatus()
+	if err != nil {
+		log.Printf("[WARN] 获取 new-api QuotaPerUnit 失败，使用默认值 %.0f: %v", defaultQuotaPerUnit, err)
+		s.quotaPerUnit = defaultQuotaPerUnit
+		return
+	}
+	if status.QuotaPerUnit <= 0 {
+		log.Printf("[WARN] new-api 返回的 QuotaPerUnit 无效 (%.0f)，使用默认值 %.0f", status.QuotaPerUnit, defaultQuotaPerUnit)
+		s.quotaPerUnit = defaultQuotaPerUnit
+		return
+	}
+	s.quotaPerUnit = status.QuotaPerUnit
+	log.Printf("[INFO] 从 new-api 获取 QuotaPerUnit = %.0f，换算因子 quotaTokensPerCent = %d", s.quotaPerUnit, s.quotaTokensPerCent())
 }
 
 func NewTeamService(
@@ -42,15 +78,19 @@ func NewTeamService(
 	invitationRepo *repository.InvitationRepo,
 	quotaAllocRepo *repository.QuotaAllocationRepo,
 	newAPIClient *newapi.Client,
+	emailService *EmailService,
+	baseURL string,
 ) *TeamService {
 	return &TeamService{
-		db:            db,
-		teamRepo:      teamRepo,
-		memberRepo:    memberRepo,
-		userRepo:      userRepo,
-		invitationRepo: invitationRepo,
-		quotaAllocRepo: quotaAllocRepo,
-		newAPIClient:  newAPIClient,
+		db:              db,
+		teamRepo:        teamRepo,
+		memberRepo:      memberRepo,
+		userRepo:        userRepo,
+		invitationRepo:  invitationRepo,
+		quotaAllocRepo:  quotaAllocRepo,
+		newAPIClient:    newAPIClient,
+		emailService:    emailService,
+		baseURL:         baseURL,
 	}
 }
 
@@ -136,8 +176,18 @@ func (s *TeamService) GetTeamBySlug(slug string) (*model.Team, error) {
 		log.Printf("[WARN] 同步团队 %s 额度失败: %v", slug, syncErr)
 		// 使用本地缓存值，不阻塞
 	}
-	// 脱敏成员的 API Key 用于展示
+	// 从 new-api 同步各成员额度并脱敏 API Key
 	for i := range team.Members {
+		member := &team.Members[i]
+		if member.NewAPITokenID > 0 {
+			if tokenInfo, tokErr := s.newAPIClient.AdminGetTokenInfo(member.NewAPITokenID); tokErr == nil {
+			member.QuotaAllocated = int64(tokenInfo.RemainQuota+tokenInfo.UsedQuota) / s.quotaTokensPerCent()
+			member.QuotaUsed = int64(tokenInfo.UsedQuota) / s.quotaTokensPerCent()
+				_ = s.memberRepo.Update(nil, member)
+			} else {
+				log.Printf("[WARN] 同步成员 %d (token=%d) 额度失败: %v", member.ID, member.NewAPITokenID, tokErr)
+			}
+		}
 		team.Members[i].NewAPIKeyMask = maskAPIKey(team.Members[i].NewAPIKey)
 	}
 	return team, nil
@@ -168,7 +218,7 @@ func (s *TeamService) SyncTeamQuota(team *model.Team) error {
 	if err != nil {
 		return fmt.Errorf("获取团队额度失败: %w", err)
 	}
-	team.Balance = userInfo.Quota
+	team.Balance = userInfo.Quota / s.quotaTokensPerCent()
 	return nil
 }
 
@@ -311,7 +361,7 @@ type MemberEntry struct {
 }
 
 // AddMembers 批量添加团队成员（仅 owner）
-// 已注册用户直接加入；未注册用户创建邀请，注册后自动成为成员
+// 已注册用户直接加入；未注册用户创建邀请并发送邮件，注册后自动成为成员
 // 返回成功数量（直接加入+已发送邀请）、失败列表
 func (s *TeamService) AddMembers(ownerID uint, slug string, entries []MemberEntry) (int, []string, error) {
 	team, err := s.teamRepo.FindBySlugLight(nil, slug)
@@ -322,6 +372,7 @@ func (s *TeamService) AddMembers(ownerID uint, slug string, entries []MemberEntr
 		return 0, nil, ErrNotTeamOwner
 	}
 
+	canSendEmail := s.emailService != nil && s.emailService.IsConfigured()
 	added := 0
 	var failed []string
 
@@ -354,6 +405,15 @@ func (s *TeamService) AddMembers(ownerID uint, slug string, entries []MemberEntr
 				failed = append(failed, fmt.Sprintf("%s: 发送邀请失败", displayLabel))
 				continue
 			}
+
+			// 发送邀请邮件
+			if canSendEmail {
+				registerURL := fmt.Sprintf("%s/register?email=%s", s.baseURL, url.QueryEscape(email))
+				if emailErr := s.emailService.SendInvitationEmail(email, team.Name, registerURL); emailErr != nil {
+					log.Printf("[WARN] 发送邀请邮件失败 %s: %v", email, emailErr)
+				}
+			}
+
 			added++ // 邀请也算"成功"
 			continue
 		}
@@ -484,12 +544,12 @@ func (s *TeamService) GetMemberQuotaInfo(slug string, memberID uint) (*QuotaInfo
 			// 返回本地缓存的金额
 			return info, nil
 		}
-		info.QuotaRemain = int64(tokenInfo.RemainQuota)
-		info.QuotaUsed = int64(tokenInfo.UsedQuota)
+		info.QuotaRemain = int64(tokenInfo.RemainQuota) / s.quotaTokensPerCent()
+		info.QuotaUsed = int64(tokenInfo.UsedQuota) / s.quotaTokensPerCent()
 
 		// 更新本地缓存
-		member.QuotaAllocated = info.QuotaRemain + info.QuotaUsed // 近似 = remain + used
-		member.QuotaUsed = info.QuotaUsed
+		member.QuotaAllocated = (int64(tokenInfo.RemainQuota) + int64(tokenInfo.UsedQuota)) / s.quotaTokensPerCent()
+		member.QuotaUsed = int64(tokenInfo.UsedQuota) / s.quotaTokensPerCent()
 		_ = s.memberRepo.Update(nil, member)
 	}
 
@@ -540,7 +600,7 @@ func (s *TeamService) SetMemberQuota(ownerID uint, slug string, memberID uint, a
 		}
 		tokenName := fmt.Sprintf("Member: %s", user.Username)
 
-		q := int(amount)
+		q := int(amount * s.quotaTokensPerCent())
 		tokenID, key, err := s.newAPIClient.AdminCreateTokenWithQuota(
 			team.NewAPIUserID, tokenName, &q, nil,
 		)
@@ -553,7 +613,7 @@ func (s *TeamService) SetMemberQuota(ownerID uint, slug string, memberID uint, a
 		member.NewAPIKeyStatus = 1
 	} else {
 		// 更新现有 token 的配额
-		q := int(amount)
+		q := int(amount * s.quotaTokensPerCent())
 		if err := s.newAPIClient.AdminUpdateTokenQuota(member.NewAPITokenID, &q, nil); err != nil {
 			return fmt.Errorf("更新配额失败: %w", err)
 		}
@@ -584,6 +644,7 @@ func (s *TeamService) RevokeMemberQuota(ownerID uint, slug string, memberID uint
 }
 
 // GetMemberLogs 获取当前成员的调用日志（使用成员自己的 API Key）
+// 返回的 LogItem.Quota 已从 new-api 内部配额点换算为 modelgate "分"（cents）
 func (s *TeamService) GetMemberLogs(userID uint, slug string) ([]newapi.LogItem, error) {
 	team, err := s.teamRepo.FindBySlugLight(nil, slug)
 	if err != nil {
@@ -604,6 +665,14 @@ func (s *TeamService) GetMemberLogs(userID uint, slug string) ([]newapi.LogItem,
 	if logs == nil {
 		logs = []newapi.LogItem{}
 	}
+
+	// 将 new-api 的 quota（内部配额点/tokens）换算为 modelgate "分"（cents）
+	// 1 分 = quotaTokensPerCent() tokens
+	qpc := s.quotaTokensPerCent()
+	for i := range logs {
+		logs[i].Quota = logs[i].Quota / int(qpc)
+	}
+
 	return logs, nil
 }
 

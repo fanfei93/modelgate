@@ -71,3 +71,15 @@ func (s *AuthService) Login(username, password string) (*model.User, error) {
 	}
 	return user, nil
 }
+
+// IsEmailRegistered 检查邮箱是否已注册
+func (s *AuthService) IsEmailRegistered(email string) (bool, error) {
+	_, err := s.userRepo.FindByEmail(email)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	return false, err
+}

@@ -246,3 +246,28 @@ func (r *QuotaAllocationRepo) FindByTeamID(teamID uint) ([]model.QuotaAllocation
 	err := r.db.Where("team_id = ?", teamID).Order("created_at DESC").Find(&allocs).Error
 	return allocs, err
 }
+
+// --- VerificationCodeRepo ---
+
+type VerificationCodeRepo struct{ db *gorm.DB }
+
+func NewVerificationCodeRepo(db *gorm.DB) *VerificationCodeRepo {
+	return &VerificationCodeRepo{db}
+}
+
+func (r *VerificationCodeRepo) Upsert(vc *model.VerificationCode) error {
+	return r.db.Where("email = ?", vc.Email).Assign(vc).FirstOrCreate(vc).Error
+}
+
+func (r *VerificationCodeRepo) FindByEmail(email string) (*model.VerificationCode, error) {
+	var vc model.VerificationCode
+	err := r.db.Where("email = ?", email).First(&vc).Error
+	if err != nil {
+		return nil, err
+	}
+	return &vc, nil
+}
+
+func (r *VerificationCodeRepo) DeleteByEmail(email string) error {
+	return r.db.Where("email = ?", email).Delete(&model.VerificationCode{}).Error
+}

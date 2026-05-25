@@ -2,6 +2,7 @@ server:
   port: 8080
   debug_mode: true
   static_dir: web/dist   # 前端构建产物目录
+  base_url: "http://localhost:5173"   # 前端地址，用于生成邀请邮件中的注册链接
 
 jwt:
   secret: "modelgate-dev-secret-change-in-production"
@@ -14,3 +15,12 @@ database:
 new_api:
   base_url: "http://localhost:3000"
   admin_key: "6f4ef279609eff8802a9d74726b5b4c4"
+  admin_user_id: 3    # new-api 中 admin key 对应的用户 ID
+
+# SMTP 邮件配置（用于发送注册验证码等）
+smtp:
+  host: "smtp.qq.com"
+  port: 465
+  username: "1610184295@qq.com"
+  password: "mixqkqxnlfkmhgef"
+  from_name: "ModelGate"

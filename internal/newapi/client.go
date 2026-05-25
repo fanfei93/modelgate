@@ -10,15 +10,17 @@ import (
 
 // Client 封装对 new-api 的 HTTP 调用
 type Client struct {
-	BaseURL    string
-	AdminKey   string
-	HTTPClient *http.Client
+	BaseURL     string
+	AdminKey    string
+	AdminUserID int // new-api 中 admin key 对应的用户 ID，用于 New-Api-User 头
+	HTTPClient  *http.Client
 }
 
-func NewClient(baseURL, adminKey string) *Client {
+func NewClient(baseURL, adminKey string, adminUserID int) *Client {
 	return &Client{
-		BaseURL:  baseURL,
-		AdminKey: adminKey,
+		BaseURL:     baseURL,
+		AdminKey:    adminKey,
+		AdminUserID: adminUserID,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -104,6 +106,8 @@ func (c *Client) GetUserInfo(userID int) (*UserInfo, error) {
 	url := fmt.Sprintf("%s/api/user/%d", c.BaseURL, userID)
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+c.AdminKey)
+	// new-api 的 AdminAuth 中间件要求 New-Api-User 头匹配 admin 用户自身 ID
+	req.Header.Set("New-Api-User", fmt.Sprintf("%d", c.AdminUserID))
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -359,6 +363,29 @@ func (c *Client) AdminDeleteToken(tokenID int) error {
 		return fmt.Errorf("delete token failed: %s", result.Message)
 	}
 	return nil
+}
+
+// StatusResponse new-api /api/status 返回
+type StatusResponse struct {
+	QuotaPerUnit float64 `json:"quota_per_unit"`
+}
+
+// GetStatus 获取 new-api 的运行状态信息（公开接口，无需鉴权）
+func (c *Client) GetStatus() (*StatusResponse, error) {
+	resp, err := c.HTTPClient.Get(c.BaseURL + "/api/status")
+	if err != nil {
+		return nil, fmt.Errorf("get status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success bool          `json:"success"`
+		Data    StatusResponse `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode status response: %w", err)
+	}
+	return &result.Data, nil
 }
 
 // LogItem new-api 调用日志条目

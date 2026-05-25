@@ -41,8 +41,8 @@ export function useAuth() {
     return res.data;
   }, []);
 
-  const registerAction = useCallback(async (username: string, email: string, password: string) => {
-    const res = await authApi.register(username, email, password);
+  const registerAction = useCallback(async (username: string, email: string, password: string, code: string) => {
+    const res = await authApi.register(username, email, password, code);
     const { token, user: userData } = res.data;
     if (token && userData) {
       localStorage.setItem('modelgate_token', token);

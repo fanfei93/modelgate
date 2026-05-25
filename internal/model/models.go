@@ -59,6 +59,15 @@ type TeamInvitation struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// VerificationCode 邮箱验证码
+type VerificationCode struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	Email     string    `gorm:"size:128;uniqueIndex;not null" json:"email"`
+	Code      string    `gorm:"size:16;not null" json:"-"`
+	ExpiresAt time.Time `gorm:"not null" json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // QuotaAllocation 额度分配记录
 type QuotaAllocation struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`

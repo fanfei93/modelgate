@@ -56,6 +56,7 @@ func main() {
 		&model.TeamMember{},
 		&model.TeamInvitation{},
 		&model.QuotaAllocation{},
+		&model.VerificationCode{},
 	); err != nil {
 		log.Fatalf("数据库迁移失败: %v", err)
 	}
@@ -67,13 +68,16 @@ func main() {
 	memberRepo := repository.NewMemberRepo(db)
 	invitationRepo := repository.NewInvitationRepo(db)
 	quotaAllocRepo := repository.NewQuotaAllocationRepo(db)
+	vcRepo := repository.NewVerificationCodeRepo(db)
 
-	newAPIClient := newapi.NewClient(cfg.NewAPI.BaseURL, cfg.NewAPI.AdminKey)
+	newAPIClient := newapi.NewClient(cfg.NewAPI.BaseURL, cfg.NewAPI.AdminKey, cfg.NewAPI.AdminUserID)
+	emailService := service.NewEmailService(cfg.SMTP, vcRepo)
 
 	authService := service.NewAuthService(userRepo)
-	teamService := service.NewTeamService(db, teamRepo, memberRepo, userRepo, invitationRepo, quotaAllocRepo, newAPIClient)
+	teamService := service.NewTeamService(db, teamRepo, memberRepo, userRepo, invitationRepo, quotaAllocRepo, newAPIClient, emailService, cfg.Server.BaseURL)
+	teamService.InitQuotaPerUnit() // 从 new-api 动态获取 QuotaPerUnit 换算因子
 
-	authHandler := handler.NewAuthHandler(authService, teamService, cfg.JWT.Secret, cfg.JWT.ExpireHours)
+	authHandler := handler.NewAuthHandler(authService, teamService, emailService, cfg.JWT.Secret, cfg.JWT.ExpireHours)
 	teamHandler := handler.NewTeamHandler(teamService)
 
 	// 创建路由
@@ -108,6 +112,7 @@ func main() {
 	{
 		authGroup.POST("/register", authHandler.Register)
 		authGroup.POST("/login", authHandler.Login)
+		authGroup.POST("/send-verification-code", authHandler.SendVerificationCode)
 	}
 
 	// 需要认证的路由

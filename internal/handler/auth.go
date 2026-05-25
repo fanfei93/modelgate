@@ -11,19 +11,56 @@ import (
 )
 
 type AuthHandler struct {
-	authService *service.AuthService
-	teamService *service.TeamService
-	jwtSecret   string
-	jwtExpire   int // hours
+	authService  *service.AuthService
+	teamService  *service.TeamService
+	emailService *service.EmailService
+	jwtSecret    string
+	jwtExpire    int // hours
 }
 
-func NewAuthHandler(authService *service.AuthService, teamService *service.TeamService, jwtSecret string, jwtExpire int) *AuthHandler {
+func NewAuthHandler(authService *service.AuthService, teamService *service.TeamService, emailService *service.EmailService, jwtSecret string, jwtExpire int) *AuthHandler {
 	return &AuthHandler{
-		authService: authService,
-		teamService: teamService,
-		jwtSecret:   jwtSecret,
-		jwtExpire:   jwtExpire,
+		authService:  authService,
+		teamService:  teamService,
+		emailService: emailService,
+		jwtSecret:    jwtSecret,
+		jwtExpire:    jwtExpire,
 	}
+}
+
+// SendVerificationCode 发送邮箱验证码
+// POST /api/auth/send-verification-code
+func (h *AuthHandler) SendVerificationCode(c *gin.Context) {
+	if !h.emailService.IsConfigured() {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "邮件服务未配置"})
+		return
+	}
+
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入有效的邮箱地址"})
+		return
+	}
+
+	// 检查邮箱是否已注册
+	registered, err := h.authService.IsEmailRegistered(req.Email)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
+		return
+	}
+	if registered {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该邮箱已注册"})
+		return
+	}
+
+	if err := h.emailService.SendVerificationCode(req.Email); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "发送验证码失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "验证码已发送"})
 }
 
 // Register 用户注册
@@ -33,10 +70,19 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Username string `json:"username" binding:"required,min=3,max=64"`
 		Email    string `json:"email" binding:"required,email"`
 		Password string `json:"password" binding:"required,min=6,max=128"`
+		Code     string `json:"code" binding:"required,len=6"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
 		return
+	}
+
+	// 校验邮箱验证码
+	if h.emailService.IsConfigured() {
+		if err := h.emailService.VerifyCode(req.Email, req.Code); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	user, err := h.authService.Register(req.Username, req.Email, req.Password)
