@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # MySQL 数据库
+  mysql:
+    image: mysql:8.0
+    container_name: modelgate-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: modelgate
+      MYSQL_USER: modelgate
+      MYSQL_PASSWORD: modelgate123
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - modelgate-network
+
+  # new-api 服务
+  new-api:
+    build:
+      context: ./new-api
+      dockerfile: Dockerfile
+    container_name: modelgate-new-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - SQL_DSN=modelgate:modelgate123@tcp(mysql:3306)/new_api?parseTime=true
+      - DEBUG=false
+      - NODE_TYPE=master
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - modelgate-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ModelGate 后端
+  modelgate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: modelgate-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.docker.yaml:/app/config.yaml:ro
+    command: ["./modelgate-server", "-config", "/app/config.yaml"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      new-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - modelgate-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  mysql_data:
+
+networks:
+  modelgate-network:
+    driver: bridge
