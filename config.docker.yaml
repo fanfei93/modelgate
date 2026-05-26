@@ -1,0 +1,25 @@
+server:
+  port: 8080
+  debug_mode: false
+  static_dir: web/dist
+  base_url: "http://localhost:8080"
+
+jwt:
+  secret: "modelgate-docker-secret-change-in-production"
+  expire_hours: 72
+
+database:
+  driver: mysql
+  dsn: "modelgate:modelgate123@tcp(mysql:3306)/modelgate?charset=utf8mb4&parseTime=True&loc=Local"
+
+new_api:
+  base_url: "http://new-api:3000"
+  admin_key: "6f4ef279609eff8802a9d74726b5b4c4"
+  admin_user_id: 3
+
+smtp:
+  host: "smtp.qq.com"
+  port: 465
+  username: "1610184295@qq.com"
+  password: "mixqkqxnlfkmhgef"
+  from_name: "ModelGate"
