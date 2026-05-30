@@ -170,11 +170,72 @@ func (s *TeamService) GetTeamBySlug(slug string) (*model.Team, error) {
 	if err != nil {
 		return nil, ErrTeamNotFound
 	}
-	// 脱敏 API Key（额度信息使用本地缓存，不再从 new-api 同步团队 token）
+	// 脱敏 API Key
 	for i := range team.Members {
 		team.Members[i].NewAPIKeyMask = maskAPIKey(team.Members[i].NewAPIKey)
 	}
+
+	// 从 new-api 实时同步各成员的 quota_used
+	s.syncMembersQuotaUsed(team)
+
 	return team, nil
+}
+
+// syncMembersQuotaUsed 并发从 new-api 获取各成员的真实已用额度，更新到 team.Members
+func (s *TeamService) syncMembersQuotaUsed(team *model.Team) {
+	// 收集需要同步的成员：有分配额度的
+	type memberSync struct {
+		index          int
+		newAPIUserID  int
+		userID        uint
+	}
+	var toSync []memberSync
+	for i, m := range team.Members {
+		if m.QuotaAllocated <= 0 || m.User == nil || m.User.NewAPIUserID <= 0 {
+			continue
+		}
+		toSync = append(toSync, memberSync{
+			index:         i,
+			newAPIUserID:  m.User.NewAPIUserID,
+			userID:        m.UserID,
+		})
+	}
+
+	if len(toSync) == 0 {
+		return
+	}
+
+	// 并发获取
+	type syncResult struct {
+		index   int
+		used    int64
+		success bool
+	}
+	ch := make(chan syncResult, len(toSync))
+	for _, ms := range toSync {
+		go func(ms memberSync) {
+			userInfo, err := s.newAPIClient.GetUserInfo(ms.newAPIUserID)
+			if err != nil {
+				ch <- syncResult{index: ms.index}
+				return
+			}
+			remainCents := int64(userInfo.Quota) / s.quotaTokensPerCent()
+			// used = 该用户所有团队分配总额 - 剩余额度
+			totalAllocated, _ := s.memberRepo.SumQuotaAllocatedByUserID(nil, ms.userID)
+			usedCents := totalAllocated - remainCents
+			if usedCents < 0 {
+				usedCents = 0
+			}
+			ch <- syncResult{index: ms.index, used: usedCents, success: true}
+		}(ms)
+	}
+
+	for range toSync {
+		r := <-ch
+		if r.success {
+			team.Members[r.index].QuotaUsed = r.used
+		}
+	}
 }
 
 // DeleteTeam 解散团队（仅 owner）
