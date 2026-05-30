@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/modelgate/internal/middleware"
+	"github.com/modelgate/internal/newapi"
 	"github.com/modelgate/internal/service"
 )
 
@@ -157,6 +158,133 @@ func (h *TeamHandler) GetMyAPIKeys(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": keys})
+}
+
+// --- 用户级别 API Key（无需团队 slug，支持多 Key） ---
+
+// userKeyResponse 用户 API Key 列表项返回
+type userKeyResponse struct {
+	ID        uint      `json:"id"`
+	UserID    uint      `json:"user_id"`
+	Name      string    `json:"name"`
+	KeyMask   string    `json:"key_mask"`
+	Status    int       `json:"status"`
+	CreatedAt string    `json:"created_at"`
+	UpdatedAt string    `json:"updated_at"`
+}
+
+// CreateUserKey 为用户创建 API Key
+// POST /api/me/keys
+func (h *TeamHandler) CreateUserKey(c *gin.Context) {
+	var req struct {
+		Name string `json:"name" binding:"max=128"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+
+	userID := middleware.GetUserID(c)
+	key, err := h.teamService.CreateUserAPIKey(userID, req.Name)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"id":         key.ID,
+		"user_id":    key.UserID,
+		"name":       key.Name,
+		"key":        key.Key,
+		"key_mask":   maskKey(key.Key),
+		"status":     key.Status,
+		"created_at": key.CreatedAt,
+	}})
+}
+
+// ListUserKeys 获取用户的 API Key 列表
+// GET /api/me/keys
+func (h *TeamHandler) ListUserKeys(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	keys, err := h.teamService.ListUserAPIKeys(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	result := make([]userKeyResponse, len(keys))
+	for i, k := range keys {
+		result[i] = userKeyResponse{
+			ID:        k.ID,
+			UserID:    k.UserID,
+			Name:      k.Name,
+			KeyMask:   maskKey(k.Key),
+			Status:    k.Status,
+			CreatedAt: k.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			UpdatedAt: k.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// GetUserKey 获取单个 API Key 完整信息（含完整密钥）
+// GET /api/me/keys/:id
+func (h *TeamHandler) GetUserKey(c *gin.Context) {
+	keyID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Key ID 无效"})
+		return
+	}
+
+	userID := middleware.GetUserID(c)
+	k, err := h.teamService.GetUserAPIKey(userID, uint(keyID))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"id":         k.ID,
+		"user_id":    k.UserID,
+		"name":       k.Name,
+		"key":        k.Key,
+		"key_mask":   maskKey(k.Key),
+		"status":     k.Status,
+		"created_at": k.CreatedAt,
+	}})
+}
+
+// ToggleUserKey 切换用户 API Key 状态
+// PUT /api/me/keys/:id/toggle
+func (h *TeamHandler) ToggleUserKey(c *gin.Context) {
+	keyID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Key ID 无效"})
+		return
+	}
+
+	userID := middleware.GetUserID(c)
+	newStatus, err := h.teamService.ToggleUserAPIKey(userID, uint(keyID))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"key_status": newStatus}})
+}
+
+// DeleteUserKey 删除用户 API Key
+// DELETE /api/me/keys/:id
+func (h *TeamHandler) DeleteUserKey(c *gin.Context) {
+	keyID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Key ID 无效"})
+		return
+	}
+
+	userID := middleware.GetUserID(c)
+	if err := h.teamService.DeleteUserAPIKey(userID, uint(keyID)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "API Key 已删除"})
 }
 
 // AddMembers 批量添加团队成员（仅 owner）
@@ -330,12 +458,28 @@ func (h *TeamHandler) RevokeMemberQuota(c *gin.Context) {
 }
 
 // GetMemberLogs 获取当前成员的调用日志
-// GET /api/teams/:slug/members/me/logs
+// GET /api/teams/:slug/members/me/logs?page=1&page_size=20&token_id=&token_name=&model_name=&start_timestamp=&end_timestamp=
 func (h *TeamHandler) GetMemberLogs(c *gin.Context) {
 	slug := c.Param("slug")
 	userID := middleware.GetUserID(c)
 
-	logs, err := h.teamService.GetMemberLogs(userID, slug)
+	var q newapi.LogsQuery
+	q.Page, _ = strconv.Atoi(c.Query("page"))
+	q.PageSize, _ = strconv.Atoi(c.Query("page_size"))
+	q.TokenID, _ = strconv.Atoi(c.Query("token_id"))
+	q.TokenName = c.Query("token_name")
+	q.ModelName = c.Query("model_name")
+	q.StartTimestamp, _ = strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	q.EndTimestamp, _ = strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+
+	if q.Page <= 0 {
+		q.Page = 1
+	}
+	if q.PageSize <= 0 {
+		q.PageSize = 20
+	}
+
+	result, err := h.teamService.GetMemberLogs(userID, slug, q)
 	if err != nil {
 		status := http.StatusBadRequest
 		if err == service.ErrTeamNotFound {
@@ -347,7 +491,28 @@ func (h *TeamHandler) GetMemberLogs(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"data": logs})
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+// GetMemberLogKeys 获取当前成员可用于日志筛选的 Key 列表
+// GET /api/teams/:slug/members/me/log-keys
+func (h *TeamHandler) GetMemberLogKeys(c *gin.Context) {
+	slug := c.Param("slug")
+	userID := middleware.GetUserID(c)
+
+	keys, err := h.teamService.GetMemberLogKeys(userID, slug)
+	if err != nil {
+		status := http.StatusBadRequest
+		if err == service.ErrTeamNotFound {
+			status = http.StatusNotFound
+		} else if err == service.ErrNotMember {
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": keys})
 }
 
 func maskKey(key string) string {

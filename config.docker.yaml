@@ -17,6 +17,9 @@ new_api:
   admin_key: "6f4ef279609eff8802a9d74726b5b4c4"
   admin_user_id: 3
 
+admin_emails:
+  - "admin@modelgate.local"
+
 smtp:
   host: "smtp.qq.com"
   port: 465

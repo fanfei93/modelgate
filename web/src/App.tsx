@@ -10,6 +10,7 @@ import Account from './pages/dashboard/Account';
 import TeamManagement from './pages/dashboard/TeamManagement';
 import TeamDetail from './pages/dashboard/TeamDetail';
 import ApiKeysManagement from './pages/dashboard/ApiKeysManagement';
+import AdminDashboard from './pages/dashboard/AdminDashboard';
 import NotFound from './pages/NotFound';
 
 export default function App() {
@@ -35,6 +36,7 @@ export default function App() {
           <Route path="api-keys" element={<ApiKeysManagement />} />
           <Route path="teams" element={<TeamManagement />} />
           <Route path="teams/:slug" element={<TeamDetail />} />
+          <Route path="admin" element={<AdminDashboard />} />
         </Route>
 
         <Route path="*" element={<NotFound />} />

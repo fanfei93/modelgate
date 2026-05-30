@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -198,6 +201,7 @@ func (c *Client) AdminCreateTokenWithQuota(userID int, tokenName string, remainQ
 		body["unlimited_quota"] = *unlimited
 	}
 	data, _ := json.Marshal(body)
+	log.Printf("[INFO] AdminCreateTokenWithQuota request body: %s", string(data))
 	req, _ := http.NewRequest("POST", c.BaseURL+"/api/admin/token/create",
 		bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
@@ -269,6 +273,7 @@ func (c *Client) AdminUpdateTokenQuota(tokenID int, remainQuota *int, unlimited 
 		body["unlimited_quota"] = *unlimited
 	}
 	data, _ := json.Marshal(body)
+	log.Printf("[INFO] AdminUpdateTokenQuota request body: %s", string(data))
 	req, _ := http.NewRequest("POST", c.BaseURL+"/api/admin/token/quota",
 		bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
@@ -412,6 +417,41 @@ type LogItem struct {
 	Other            string  `json:"other"`
 }
 
+// AdminUpdateUserQuota 使用管理员权限覆盖用户的总配额（user.Quota）
+// 调用 POST /api/user/manage action=add_quota mode=override
+func (c *Client) AdminUpdateUserQuota(userID int, quota int) error {
+	body := map[string]interface{}{
+		"id":     userID,
+		"action": "add_quota",
+		"value":  quota,
+		"mode":   "override",
+	}
+	data, _ := json.Marshal(body)
+	req, _ := http.NewRequest("POST", c.BaseURL+"/api/user/manage",
+		bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.AdminKey)
+	req.Header.Set("New-Api-User", fmt.Sprintf("%d", c.AdminUserID))
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("admin update user quota: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode update user quota response: %w", err)
+	}
+	if !result.Success {
+		return fmt.Errorf("update user quota failed: %s", result.Message)
+	}
+	return nil
+}
+
 // GetLogsByToken 使用 API Key 查询该 token 的调用日志
 func (c *Client) GetLogsByToken(token string) ([]LogItem, error) {
 	req, _ := http.NewRequest("GET", c.BaseURL+"/api/log/token", nil)
@@ -435,4 +475,95 @@ func (c *Client) GetLogsByToken(token string) ([]LogItem, error) {
 		return nil, fmt.Errorf("get logs failed: %s", result.Message)
 	}
 	return result.Data, nil
+}
+
+// LogsQuery 调用日志查询参数
+type LogsQuery struct {
+	Username       string // 用户名（new-api 中的用户名）
+	TokenName      string // API Key 名称筛选（new-api 原始 token_name）
+	TokenID        int    // API Key ID 筛选（优先于 TokenName，会通过 AdminGetTokenInfo 查找原始 token_name）
+	ModelName      string // 模型名称筛选
+	StartTimestamp int64  // 起始时间（Unix 秒）
+	EndTimestamp   int64  // 结束时间（Unix 秒）
+	Page           int    // 页码（从 1 开始）
+	PageSize       int    // 每页条数
+}
+
+// PaginatedLogs 分页日志结果
+type PaginatedLogs struct {
+	Items    []LogItem `json:"items"`
+	Total    int       `json:"total"`
+	Page     int       `json:"page"`
+	PageSize int       `json:"page_size"`
+}
+
+// GetLogsByUserID 使用管理员权限查询指定用户的所有调用日志（按 user_id 过滤）
+// 通过 admin API 的 /api/log/ 端点按 username 查询，支持筛选和分页
+func (c *Client) GetLogsByUserID(q LogsQuery) (*PaginatedLogs, error) {
+	if q.Page <= 0 {
+		q.Page = 1
+	}
+	if q.PageSize <= 0 {
+		q.PageSize = 20
+	}
+
+	// 如果指定了 TokenID，通过 AdminGetTokenInfo 获取原始 token_name 用于筛选
+	if q.TokenID > 0 && q.TokenName == "" {
+		tokenInfo, err := c.AdminGetTokenInfo(q.TokenID)
+		if err == nil && tokenInfo != nil {
+			q.TokenName = tokenInfo.Name
+		}
+	}
+
+	params := url.Values{}
+	params.Set("username", q.Username)
+	params.Set("p", strconv.Itoa(q.Page))
+	params.Set("page_size", strconv.Itoa(q.PageSize))
+	if q.TokenName != "" {
+		params.Set("token_name", q.TokenName)
+	}
+	if q.ModelName != "" {
+		params.Set("model_name", q.ModelName)
+	}
+	if q.StartTimestamp > 0 {
+		params.Set("start_timestamp", strconv.FormatInt(q.StartTimestamp, 10))
+	}
+	if q.EndTimestamp > 0 {
+		params.Set("end_timestamp", strconv.FormatInt(q.EndTimestamp, 10))
+	}
+
+	reqURL := fmt.Sprintf("%s/api/log/?%s", c.BaseURL, params.Encode())
+	req, _ := http.NewRequest("GET", reqURL, nil)
+	req.Header.Set("Authorization", "Bearer "+c.AdminKey)
+	req.Header.Set("New-Api-User", fmt.Sprintf("%d", c.AdminUserID))
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get logs by user id: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+		Data    struct {
+			Items    []LogItem `json:"items"`
+			Total    int       `json:"total"`
+			Page     int       `json:"page"`
+			PageSize int       `json:"page_size"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode logs response: %w", err)
+	}
+	if !result.Success {
+		return nil, fmt.Errorf("get logs failed: %s", result.Message)
+	}
+
+	return &PaginatedLogs{
+		Items:    result.Data.Items,
+		Total:    result.Data.Total,
+		Page:     result.Data.Page,
+		PageSize: result.Data.PageSize,
+	}, nil
 }

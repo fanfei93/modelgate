@@ -15,16 +15,22 @@ type AuthHandler struct {
 	teamService  *service.TeamService
 	emailService *service.EmailService
 	jwtSecret    string
-	jwtExpire    int // hours
+	jwtExpire    int    // hours
+	adminEmails  map[string]bool
 }
 
-func NewAuthHandler(authService *service.AuthService, teamService *service.TeamService, emailService *service.EmailService, jwtSecret string, jwtExpire int) *AuthHandler {
+func NewAuthHandler(authService *service.AuthService, teamService *service.TeamService, emailService *service.EmailService, jwtSecret string, jwtExpire int, adminEmails []string) *AuthHandler {
+	emailSet := make(map[string]bool, len(adminEmails))
+	for _, e := range adminEmails {
+		emailSet[e] = true
+	}
 	return &AuthHandler{
 		authService:  authService,
 		teamService:  teamService,
 		emailService: emailService,
 		jwtSecret:    jwtSecret,
 		jwtExpire:    jwtExpire,
+		adminEmails:  emailSet,
 	}
 }
 
@@ -94,7 +100,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	// 处理该邮箱的待处理邀请（异步，不阻塞注册）
 	go h.teamService.ProcessInvitations(req.Email, user.ID)
 
-	token, err := h.generateToken(user.ID, user.Username)
+	token, err := h.generateToken(user.ID, user.Username, user.Email)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成 Token 失败"})
 		return
@@ -129,7 +135,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	token, err := h.generateToken(user.ID, user.Username)
+	token, err := h.generateToken(user.ID, user.Username, user.Email)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成 Token 失败"})
 		return
@@ -160,14 +166,16 @@ func (h *AuthHandler) Me(c *gin.Context) {
 			"username":     user.Username,
 			"email":        user.Email,
 			"display_name": user.DisplayName,
+			"is_admin":     h.adminEmails[user.Email],
 		},
 	})
 }
 
-func (h *AuthHandler) generateToken(userID uint, username string) (string, error) {
+func (h *AuthHandler) generateToken(userID uint, username, email string) (string, error) {
 	claims := &middleware.Claims{
 		UserID:   userID,
 		Username: username,
+		Email:    email,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(h.jwtExpire) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

@@ -141,6 +141,14 @@ func (r *MemberRepo) DeleteByID(tx *gorm.DB, id uint) error {
 	return tx.Delete(&model.TeamMember{}, id).Error
 }
 
+// DeleteByTeamAndUser 删除指定团队中的成员记录
+func (r *MemberRepo) DeleteByTeamAndUser(tx *gorm.DB, teamID, userID uint) error {
+	if tx == nil {
+		tx = r.db
+	}
+	return tx.Where("team_id = ? AND user_id = ?", teamID, userID).Delete(&model.TeamMember{}).Error
+}
+
 func (r *MemberRepo) Update(tx *gorm.DB, m *model.TeamMember) error {
 	if tx == nil {
 		tx = r.db
@@ -178,6 +186,26 @@ func (r *MemberRepo) FindByUserID(tx *gorm.DB, userID uint) ([]model.TeamMember,
 	}
 	var members []model.TeamMember
 	err := tx.Where("user_id = ?", userID).Find(&members).Error
+	return members, err
+}
+
+// CountByUserID 统计用户所属的团队数量
+func (r *MemberRepo) CountByUserID(tx *gorm.DB, userID uint) (int64, error) {
+	if tx == nil {
+		tx = r.db
+	}
+	var count int64
+	err := tx.Model(&model.TeamMember{}).Where("user_id = ?", userID).Count(&count).Error
+	return count, err
+}
+
+// FindByTeamID 获取团队的所有成员
+func (r *MemberRepo) FindByTeamID(tx *gorm.DB, teamID uint) ([]model.TeamMember, error) {
+	if tx == nil {
+		tx = r.db
+	}
+	var members []model.TeamMember
+	err := tx.Where("team_id = ?", teamID).Find(&members).Error
 	return members, err
 }
 
@@ -227,6 +255,41 @@ func (r *InvitationRepo) FindByTeamID(teamID uint) ([]model.TeamInvitation, erro
 	var invs []model.TeamInvitation
 	err := r.db.Where("team_id = ?", teamID).Order("created_at DESC").Find(&invs).Error
 	return invs, err
+}
+
+// --- UserAPIKeyRepo ---
+
+type UserAPIKeyRepo struct{ db *gorm.DB }
+
+func NewUserAPIKeyRepo(db *gorm.DB) *UserAPIKeyRepo {
+	return &UserAPIKeyRepo{db}
+}
+
+func (r *UserAPIKeyRepo) Create(key *model.UserAPIKey) error {
+	return r.db.Create(key).Error
+}
+
+func (r *UserAPIKeyRepo) FindByID(id uint) (*model.UserAPIKey, error) {
+	var k model.UserAPIKey
+	err := r.db.First(&k, id).Error
+	if err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
+
+func (r *UserAPIKeyRepo) FindByUserID(userID uint) ([]model.UserAPIKey, error) {
+	var keys []model.UserAPIKey
+	err := r.db.Where("user_id = ?", userID).Order("created_at DESC").Find(&keys).Error
+	return keys, err
+}
+
+func (r *UserAPIKeyRepo) Update(key *model.UserAPIKey) error {
+	return r.db.Save(key).Error
+}
+
+func (r *UserAPIKeyRepo) Delete(id uint) error {
+	return r.db.Delete(&model.UserAPIKey{}, id).Error
 }
 
 // --- QuotaAllocationRepo ---

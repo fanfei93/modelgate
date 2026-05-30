@@ -27,18 +27,20 @@ var (
 	ErrNotMember             = errors.New("不是团队成员")
 	ErrTeamSlugExists        = errors.New("团队标识已被占用")
 	ErrInsufficientBalance   = errors.New("团队额度不足，无法分配")
+	ErrMaxTeamLimit          = errors.New("每个用户只能加入或创建一个团队")
 )
 
 type TeamService struct {
-	teamRepo       *repository.TeamRepo
-	memberRepo     *repository.MemberRepo
-	userRepo       *repository.UserRepo
-	invitationRepo *repository.InvitationRepo
-	quotaAllocRepo *repository.QuotaAllocationRepo
-	newAPIClient   *newapi.Client
-	emailService   *EmailService
-	baseURL        string // 前端地址，用于生成邀请链接
-	db             *gorm.DB
+	teamRepo        *repository.TeamRepo
+	memberRepo      *repository.MemberRepo
+	userRepo        *repository.UserRepo
+	userAPIKeyRepo  *repository.UserAPIKeyRepo
+	invitationRepo  *repository.InvitationRepo
+	quotaAllocRepo  *repository.QuotaAllocationRepo
+	newAPIClient    *newapi.Client
+	emailService    *EmailService
+	baseURL         string // 前端地址，用于生成邀请链接
+	db              *gorm.DB
 
 	// quotaPerUnit new-api 的 token/美元 换算因子，从 /api/status 动态获取
 	// quotaTokensPerCent = quotaPerUnit / 100，即 modelgate "分" 对应的 token 数
@@ -75,6 +77,7 @@ func NewTeamService(
 	teamRepo *repository.TeamRepo,
 	memberRepo *repository.MemberRepo,
 	userRepo *repository.UserRepo,
+	userAPIKeyRepo *repository.UserAPIKeyRepo,
 	invitationRepo *repository.InvitationRepo,
 	quotaAllocRepo *repository.QuotaAllocationRepo,
 	newAPIClient *newapi.Client,
@@ -86,6 +89,7 @@ func NewTeamService(
 		teamRepo:        teamRepo,
 		memberRepo:      memberRepo,
 		userRepo:        userRepo,
+		userAPIKeyRepo:  userAPIKeyRepo,
 		invitationRepo:  invitationRepo,
 		quotaAllocRepo:  quotaAllocRepo,
 		newAPIClient:    newAPIClient,
@@ -94,9 +98,18 @@ func NewTeamService(
 	}
 }
 
-// CreateTeam 创建团队，会在 new-api 中创建对应的内部用户
-// slug 由服务端根据 name 自动生成，无需客户端传入
+// CreateTeam 创建团队
+// 用户只能创建一个团队（或加入一个团队）
 func (s *TeamService) CreateTeam(ownerID uint, name string) (*model.Team, error) {
+	// 检查用户是否已在某个团队中（只能加入/创建一个团队）
+	count, err := s.memberRepo.CountByUserID(nil, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("检查团队数量失败: %w", err)
+	}
+	if count > 0 {
+		return nil, ErrMaxTeamLimit
+	}
+
 	slug := generateSlug(name)
 
 	// 检查 slug 唯一性，冲突时追加随机后缀
@@ -114,27 +127,12 @@ func (s *TeamService) CreateTeam(ownerID uint, name string) (*model.Team, error)
 		}
 	}
 
-	// 在 new-api 中创建内部用户（用于团队级别的计费，不作为 API Key 暴露）
-	// new-api 约束: username max=20, password min=8 max=20, display_name max=20
-	username := slug
-	if len(username) > 20 {
-		username = username[:20]
-	}
-	password := generateRandomPassword(16)
-	newAPIEmail := fmt.Sprintf("%s@modelgate.local", slug)
-	newAPIUserID, err := s.newAPIClient.RegisterUserWithUsername(username, newAPIEmail, password)
-	if err != nil {
-		return nil, fmt.Errorf("创建内部用户失败: %w", err)
-	}
-
 	team := &model.Team{
-		Name:           name,
-		Slug:           slug,
-		NewAPIUserID:   newAPIUserID,
-		NewAPIPassword: password,
-		OwnerID:        ownerID,
-		Balance:        0,
-		Status:         "active",
+		Name:    name,
+		Slug:    slug,
+		OwnerID: ownerID,
+		Balance: 0,
+		Status:  "active",
 	}
 
 	tx := s.db.Begin()
@@ -171,18 +169,13 @@ func (s *TeamService) GetTeamBySlug(slug string) (*model.Team, error) {
 	if err != nil {
 		return nil, ErrTeamNotFound
 	}
-	// 从 new-api 同步团队总额度
-	if syncErr := s.SyncTeamQuota(team); syncErr != nil {
-		log.Printf("[WARN] 同步团队 %s 额度失败: %v", slug, syncErr)
-		// 使用本地缓存值，不阻塞
-	}
 	// 从 new-api 同步各成员额度并脱敏 API Key
 	for i := range team.Members {
 		member := &team.Members[i]
 		if member.NewAPITokenID > 0 {
 			if tokenInfo, tokErr := s.newAPIClient.AdminGetTokenInfo(member.NewAPITokenID); tokErr == nil {
-			member.QuotaAllocated = int64(tokenInfo.RemainQuota+tokenInfo.UsedQuota) / s.quotaTokensPerCent()
-			member.QuotaUsed = int64(tokenInfo.UsedQuota) / s.quotaTokensPerCent()
+				member.QuotaAllocated = int64(tokenInfo.RemainQuota+tokenInfo.UsedQuota) / s.quotaTokensPerCent()
+				member.QuotaUsed = int64(tokenInfo.UsedQuota) / s.quotaTokensPerCent()
 				_ = s.memberRepo.Update(nil, member)
 			} else {
 				log.Printf("[WARN] 同步成员 %d (token=%d) 额度失败: %v", member.ID, member.NewAPITokenID, tokErr)
@@ -203,6 +196,18 @@ func (s *TeamService) DeleteTeam(userID uint, slug string) error {
 		return ErrNotTeamOwner
 	}
 
+	// 清理所有成员在 new-api 中的 token
+	members, err := s.memberRepo.FindByTeamID(nil, team.ID)
+	if err == nil {
+		for _, m := range members {
+			if m.NewAPITokenID > 0 {
+				if delErr := s.newAPIClient.AdminDeleteToken(m.NewAPITokenID); delErr != nil {
+					log.Printf("[WARN] 删除成员 token (id=%d) 失败: %v", m.NewAPITokenID, delErr)
+				}
+			}
+		}
+	}
+
 	tx := s.db.Begin()
 	if err := s.teamRepo.Delete(tx, team.ID); err != nil {
 		tx.Rollback()
@@ -212,18 +217,14 @@ func (s *TeamService) DeleteTeam(userID uint, slug string) error {
 	return nil
 }
 
-// SyncTeamQuota 从 new-api 同步团队总额度到本地 Balance
+// SyncTeamQuota [已废弃] 团队余额现由 modelgate 本地管理，不再从 new-api 同步
 func (s *TeamService) SyncTeamQuota(team *model.Team) error {
-	userInfo, err := s.newAPIClient.GetUserInfo(team.NewAPIUserID)
-	if err != nil {
-		return fmt.Errorf("获取团队额度失败: %w", err)
-	}
-	team.Balance = userInfo.Quota / s.quotaTokensPerCent()
+	// no-op: 团队余额由超管充值，本地管理
 	return nil
 }
 
 // CreateMemberAPIKey 为当前成员创建个人 API Key
-// 在团队的 new-api 用户下创建一个独立 token，每个成员拥有独立的 Key，共享团队额度
+// 在成员自己的 new-api 用户下创建 token
 func (s *TeamService) CreateMemberAPIKey(userID uint, slug string) (string, error) {
 	team, err := s.teamRepo.FindBySlugLight(nil, slug)
 	if err != nil {
@@ -234,22 +235,53 @@ func (s *TeamService) CreateMemberAPIKey(userID uint, slug string) (string, erro
 		return "", ErrNotMember
 	}
 
-	// 获取成员用户名作为 token 名称
+	// 获取成员信息
 	user, err := s.userRepo.FindByID(userID)
 	if err != nil {
 		return "", fmt.Errorf("获取用户信息失败: %w", err)
 	}
-	tokenName := fmt.Sprintf("Member: %s", user.Username)
+	if user.NewAPIUserID <= 0 {
+		return "", fmt.Errorf("用户的 API 账户尚未创建，请联系管理员")
+	}
 
-	// 先删除旧 token（如果存在）
+	// 如果已有 key，先获取旧 token 的配额信息，以便重建时保留
+	var oldQuota *int
 	if member.NewAPITokenID > 0 {
+		if info, err := s.newAPIClient.AdminGetTokenInfo(member.NewAPITokenID); err == nil {
+			q := info.RemainQuota + info.UsedQuota
+			oldQuota = &q
+		}
+		// 删除旧 token
 		if err := s.newAPIClient.AdminDeleteToken(member.NewAPITokenID); err != nil {
 			log.Printf("[WARN] 删除旧 token (id=%d) 失败: %v", member.NewAPITokenID, err)
 		}
+	} else if member.QuotaAllocated > 0 {
+		// 首次创建 token，但成员已有分配额度，使用分配额度作为初始配额
+		q := int(member.QuotaAllocated * s.quotaTokensPerCent())
+		oldQuota = &q
+		log.Printf("[INFO] CreateAPIKey: 使用已分配额度 member=%d QuotaAllocated=%d(cents) q=%d(tokens)",
+			member.ID, member.QuotaAllocated, q)
+	} else {
+		// 成员尚未被分配额度，不能创建 API Key
+		return "", fmt.Errorf("尚未分配额度，请联系团队 Owner 先分配额度后再创建 API Key")
 	}
 
-	// 使用 admin key 在团队 new-api 用户下创建新 token
-	tokenID, key, err := s.newAPIClient.AdminCreateToken(team.NewAPIUserID, tokenName)
+	tokenName := fmt.Sprintf("mg_%s_%s", team.Slug, user.Username)
+	if len(tokenName) > 30 {
+		tokenName = tokenName[:30]
+	}
+
+	// 在成员自己的 new-api 用户下创建新 token，保留旧配额
+	if oldQuota != nil {
+		log.Printf("[INFO] CreateAPIKey user=%d member=%d newAPIUserID=%d oldQuota=%d",
+			userID, member.ID, user.NewAPIUserID, *oldQuota)
+	} else {
+		log.Printf("[INFO] CreateAPIKey user=%d member=%d newAPIUserID=%d oldQuota=nil QuotaAllocated=%d",
+			userID, member.ID, user.NewAPIUserID, member.QuotaAllocated)
+	}
+	tokenID, key, err := s.newAPIClient.AdminCreateTokenWithQuota(
+		user.NewAPIUserID, tokenName, oldQuota, nil,
+	)
 	if err != nil {
 		return "", fmt.Errorf("创建 API Key 失败: %w", err)
 	}
@@ -313,6 +345,131 @@ func (s *TeamService) ToggleMemberKey(userID uint, slug string) (int, error) {
 	}
 
 	return newStatus, nil
+}
+
+// --- 用户级别 API Key（不关联团队，支持多 Key） ---
+
+// CreateUserAPIKey 为当前用户创建 API Key（无需团队 slug）
+func (s *TeamService) CreateUserAPIKey(userID uint, name string) (*model.UserAPIKey, error) {
+	user, err := s.userRepo.FindByID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("获取用户信息失败: %w", err)
+	}
+	if user.NewAPIUserID <= 0 {
+		return nil, fmt.Errorf("用户的 API 账户尚未创建，请联系管理员")
+	}
+	if name == "" {
+		name = "Default"
+	}
+
+	// 查找用户的团队成员记录（用于 token 命名）
+	members, _ := s.memberRepo.FindByUserID(nil, userID)
+	teamSlug := ""
+	if len(members) > 0 {
+		if team, err := s.teamRepo.FindByID(nil, members[0].TeamID); err == nil && team != nil {
+			teamSlug = team.Slug
+		}
+	}
+
+	tokenName := fmt.Sprintf("mg_%s_%s", name, user.Username)
+	if teamSlug != "" {
+		tokenName = fmt.Sprintf("mg_%s_%s_%s", teamSlug, name, user.Username)
+	}
+	if len(tokenName) > 30 {
+		tokenName = tokenName[:30]
+	}
+
+	// 用户级别 API Key：设置 unlimited_quota=true
+	// 额度控制通过 new-api 的 user.Quota 实现（AdminUpdateUserQuota），
+	// token 自身不需要额度限制，否则 remain_quota=0 + unlimited=false 会导致
+	// ValidateUserToken 直接返回 "Invalid token"
+	unlimited := true
+	tokenID, key, err := s.newAPIClient.AdminCreateTokenWithQuota(user.NewAPIUserID, tokenName, nil, &unlimited)
+	if err != nil {
+		return nil, fmt.Errorf("创建 API Key 失败: %w", err)
+	}
+
+	apiKey := &model.UserAPIKey{
+		UserID:  userID,
+		Name:    name,
+		TokenID: tokenID,
+		Key:     key,
+		Status:  1,
+	}
+	if err := s.userAPIKeyRepo.Create(apiKey); err != nil {
+		// 回滚：删除已创建的 new-api token
+		_ = s.newAPIClient.AdminDeleteToken(tokenID)
+		return nil, fmt.Errorf("存储 API Key 失败: %w", err)
+	}
+
+	return apiKey, nil
+}
+
+// ListUserAPIKeys 获取当前用户的 API Key 列表
+func (s *TeamService) ListUserAPIKeys(userID uint) ([]model.UserAPIKey, error) {
+	return s.userAPIKeyRepo.FindByUserID(userID)
+}
+
+// GetUserAPIKey 获取单个 API Key
+func (s *TeamService) GetUserAPIKey(userID, keyID uint) (*model.UserAPIKey, error) {
+	k, err := s.userAPIKeyRepo.FindByID(keyID)
+	if err != nil {
+		return nil, fmt.Errorf("API Key 不存在")
+	}
+	if k.UserID != userID {
+		return nil, fmt.Errorf("无权访问该 API Key")
+	}
+	return k, nil
+}
+
+// ToggleUserAPIKey 切换 API Key 状态
+func (s *TeamService) ToggleUserAPIKey(userID, keyID uint) (int, error) {
+	k, err := s.userAPIKeyRepo.FindByID(keyID)
+	if err != nil {
+		return 0, fmt.Errorf("API Key 不存在")
+	}
+	if k.UserID != userID {
+		return 0, fmt.Errorf("无权操作该 API Key")
+	}
+
+	newStatus := 2
+	if k.Status == 2 {
+		newStatus = 1
+	}
+
+	if k.TokenID > 0 {
+		if err := s.newAPIClient.AdminUpdateTokenStatus(k.TokenID, newStatus); err != nil {
+			log.Printf("[WARN] 更新 new-api token (id=%d) 状态失败: %v", k.TokenID, err)
+			return 0, fmt.Errorf("更新 Key 状态失败")
+		}
+	}
+
+	k.Status = newStatus
+	if err := s.userAPIKeyRepo.Update(k); err != nil {
+		return 0, err
+	}
+
+	return newStatus, nil
+}
+
+// DeleteUserAPIKey 删除用户的 API Key
+func (s *TeamService) DeleteUserAPIKey(userID, keyID uint) error {
+	k, err := s.userAPIKeyRepo.FindByID(keyID)
+	if err != nil {
+		return fmt.Errorf("API Key 不存在")
+	}
+	if k.UserID != userID {
+		return fmt.Errorf("无权操作该 API Key")
+	}
+
+	// 删除 new-api 中的 token
+	if k.TokenID > 0 {
+		if err := s.newAPIClient.AdminDeleteToken(k.TokenID); err != nil {
+			log.Printf("[WARN] 删除 new-api token (id=%d) 失败: %v", k.TokenID, err)
+		}
+	}
+
+	return s.userAPIKeyRepo.Delete(keyID)
 }
 
 // APIKeyInfo 用户 API Key 摘要信息
@@ -425,6 +582,12 @@ func (s *TeamService) AddMembers(ownerID uint, slug string, entries []MemberEntr
 			continue
 		}
 
+		// 检查用户是否已在其他团队中（每个用户只能加入一个团队）
+		if userCount, cntErr := s.memberRepo.CountByUserID(nil, user.ID); cntErr == nil && userCount > 0 {
+			failed = append(failed, fmt.Sprintf("%s: 该用户已属于其他团队", displayLabel))
+			continue
+		}
+
 		// 如果存在同名邀请，先标记为 accepted
 		if inv, invErr := s.invitationRepo.FindByTeamAndEmail(team.ID, email); invErr == nil {
 			_ = s.invitationRepo.UpdateStatus(inv.ID, "accepted")
@@ -453,6 +616,18 @@ func (s *TeamService) ProcessInvitations(email string, userID uint) {
 	if err != nil {
 		return
 	}
+
+	// 检查用户是否已属于其他团队
+	count, cntErr := s.memberRepo.CountByUserID(nil, userID)
+	if cntErr != nil {
+		log.Printf("[WARN] 检查用户团队数量失败: %v", cntErr)
+		return
+	}
+	if count > 0 {
+		log.Printf("[INFO] 用户 %d 已属于团队，跳过邀请处理", userID)
+		return
+	}
+
 	for _, inv := range invs {
 		// 检查是否已是成员（防止重复）
 		if _, err := s.memberRepo.FindByTeamAndUser(nil, inv.TeamID, userID); err == nil {
@@ -502,6 +677,13 @@ func (s *TeamService) RemoveMember(ownerID uint, slug string, memberID uint) err
 	}
 	if member.Role == "owner" {
 		return errors.New("无法移除团队拥有者")
+	}
+
+	// 清理成员在 new-api 中的 token
+	if member.NewAPITokenID > 0 {
+		if delErr := s.newAPIClient.AdminDeleteToken(member.NewAPITokenID); delErr != nil {
+			log.Printf("[WARN] 删除成员 token (id=%d) 失败: %v", member.NewAPITokenID, delErr)
+		}
 	}
 
 	return s.memberRepo.DeleteByID(nil, memberID)
@@ -572,11 +754,6 @@ func (s *TeamService) SetMemberQuota(ownerID uint, slug string, memberID uint, a
 		return ErrNotMember
 	}
 
-	// 同步团队最新额度
-	if syncErr := s.SyncTeamQuota(team); syncErr != nil {
-		log.Printf("[WARN] 同步团队 %s 额度失败: %v", slug, syncErr)
-	}
-
 	// 校验团队额度是否充足
 	othersAllocated, err := s.memberRepo.SumQuotaAllocatedExcept(nil, team.ID, memberID)
 	if err != nil {
@@ -592,17 +769,39 @@ func (s *TeamService) SetMemberQuota(ownerID uint, slug string, memberID uint, a
 		)
 	}
 
-	// 如果成员还没有 API Key，先创建
-	if member.NewAPIKey == "" || member.NewAPITokenID <= 0 {
-		user, err := s.userRepo.FindByID(member.UserID)
-		if err != nil {
-			return fmt.Errorf("获取用户信息失败: %w", err)
-		}
-		tokenName := fmt.Sprintf("Member: %s", user.Username)
+	// 获取成员的新-api 用户 ID
+	user, err := s.userRepo.FindByID(member.UserID)
+	if err != nil {
+		return fmt.Errorf("获取用户信息失败: %w", err)
+	}
+	if user.NewAPIUserID <= 0 {
+		return fmt.Errorf("成员 %s 的 API 账户尚未创建", user.Username)
+	}
 
-		q := int(amount * s.quotaTokensPerCent())
+	q := int(amount * s.quotaTokensPerCent())
+	log.Printf("[INFO] SetMemberQuota member=%d newAPIUserID=%d amount=%d(sents) quotaTokensPerCent=%d q=%d",
+		memberID, user.NewAPIUserID, amount, s.quotaTokensPerCent(), q)
+
+	// 同步用户级别的额度到 new-api（new-api 计费时先检查 user.Quota 再检查 token.RemainQuota）
+	if err := s.newAPIClient.AdminUpdateUserQuota(user.NewAPIUserID, q); err != nil {
+		log.Printf("[WARN] 同步用户 %d 额度到 new-api 失败: %v", user.NewAPIUserID, err)
+		// 不阻断流程，token 额度已设置
+	}
+
+	// 根据成员 token 状态选择操作路径
+	if member.NewAPIKey == "" || member.NewAPITokenID <= 0 {
+		// 没有 API Key，或 NewAPITokenID 未记录（旧数据迁移场景，token 已存在于 new-api 但 modelgate 未记录其 ID）
+		// 创建新 token 并附带配额，旧 orphan token 随后可通过后台手动清理
+		if member.NewAPITokenID <= 0 && member.NewAPIKey != "" {
+			log.Printf("[INFO] 成员 %d 有 API Key 但 NewAPITokenID 未记录，将创建新 token", member.ID)
+		}
+		tokenName := fmt.Sprintf("mg_%s_%s", slug, user.Username)
+		if len(tokenName) > 30 {
+			tokenName = tokenName[:30]
+		}
+
 		tokenID, key, err := s.newAPIClient.AdminCreateTokenWithQuota(
-			team.NewAPIUserID, tokenName, &q, nil,
+			user.NewAPIUserID, tokenName, &q, nil,
 		)
 		if err != nil {
 			return fmt.Errorf("创建 API Key 失败: %w", err)
@@ -613,9 +812,15 @@ func (s *TeamService) SetMemberQuota(ownerID uint, slug string, memberID uint, a
 		member.NewAPIKeyStatus = 1
 	} else {
 		// 更新现有 token 的配额
-		q := int(amount * s.quotaTokensPerCent())
 		if err := s.newAPIClient.AdminUpdateTokenQuota(member.NewAPITokenID, &q, nil); err != nil {
 			return fmt.Errorf("更新配额失败: %w", err)
+		}
+		// 配额更新后，如果 token 因之前额度耗尽被标记为 Exhausted(4)，
+		// 需要恢复为 Enabled(1)，否则后续 API 调用仍会返回 "Invalid token"
+		if member.NewAPIKeyStatus == 1 {
+			if err := s.newAPIClient.AdminUpdateTokenStatus(member.NewAPITokenID, 1); err != nil {
+				log.Printf("[WARN] 恢复 token 状态失败 tokenID=%d: %v", member.NewAPITokenID, err)
+			}
 		}
 	}
 
@@ -643,37 +848,127 @@ func (s *TeamService) RevokeMemberQuota(ownerID uint, slug string, memberID uint
 	return s.SetMemberQuota(ownerID, slug, memberID, 0)
 }
 
-// GetMemberLogs 获取当前成员的调用日志（使用成员自己的 API Key）
+// GetMemberLogs 获取当前成员的调用日志（查询该用户在 new-api 中的所有 token 日志）
 // 返回的 LogItem.Quota 已从 new-api 内部配额点换算为 modelgate "分"（cents）
-func (s *TeamService) GetMemberLogs(userID uint, slug string) ([]newapi.LogItem, error) {
+func (s *TeamService) GetMemberLogs(userID uint, slug string, q newapi.LogsQuery) (*newapi.PaginatedLogs, error) {
 	team, err := s.teamRepo.FindBySlugLight(nil, slug)
 	if err != nil {
 		return nil, ErrTeamNotFound
 	}
-	member, err := s.memberRepo.FindByTeamAndUser(nil, team.ID, userID)
+	_, err = s.memberRepo.FindByTeamAndUser(nil, team.ID, userID)
 	if err != nil {
 		return nil, ErrNotMember
 	}
-	if member.NewAPIKey == "" {
-		return []newapi.LogItem{}, nil
+
+	// 获取用户的 new-api 信息
+	user, err := s.userRepo.FindByID(userID)
+	if err != nil {
+		return nil, fmt.Errorf("获取用户信息失败: %w", err)
+	}
+	if user.NewAPIUserID <= 0 {
+		return &newapi.PaginatedLogs{Items: []newapi.LogItem{}, Total: 0, Page: q.Page, PageSize: q.PageSize}, nil
 	}
 
-	logs, err := s.newAPIClient.GetLogsByToken(member.NewAPIKey)
+	// 使用 admin API 按 username 查询该用户所有 token 的日志
+	// new-api 用户名格式为 mg_<username>
+	newAPIUsername := fmt.Sprintf("mg_%s", user.Username)
+	if len(newAPIUsername) > 20 {
+		newAPIUsername = newAPIUsername[:20]
+	}
+	q.Username = newAPIUsername
+
+	log.Printf("[INFO] GetMemberLogs userID=%d slug=%s newAPIUserID=%d newAPIUsername=%s page=%d pageSize=%d tokenID=%d tokenName=%q start=%d end=%d",
+		userID, slug, user.NewAPIUserID, newAPIUsername, q.Page, q.PageSize, q.TokenID, q.TokenName, q.StartTimestamp, q.EndTimestamp)
+
+	result, err := s.newAPIClient.GetLogsByUserID(q)
 	if err != nil {
+		log.Printf("[ERROR] GetMemberLogs GetLogsByUserID failed: %v", err)
 		return nil, fmt.Errorf("获取日志失败: %w", err)
 	}
-	if logs == nil {
-		logs = []newapi.LogItem{}
+	if result.Items == nil {
+		result.Items = []newapi.LogItem{}
 	}
 
 	// 将 new-api 的 quota（内部配额点/tokens）换算为 modelgate "分"（cents）
 	// 1 分 = quotaTokensPerCent() tokens
 	qpc := s.quotaTokensPerCent()
-	for i := range logs {
-		logs[i].Quota = logs[i].Quota / int(qpc)
+
+	// 构建 tokenID -> modelgate key 名称 的映射，将 new-api 的 token_name 替换为用户友好的名称
+	tokenNameMap := s.buildTokenNameMap(userID)
+
+	for i := range result.Items {
+		result.Items[i].Quota = result.Items[i].Quota / int(qpc)
+		// 替换 token_name 为 modelgate 中的用户自定义名称
+		if name, ok := tokenNameMap[result.Items[i].TokenID]; ok {
+			result.Items[i].TokenName = name
+		}
 	}
 
-	return logs, nil
+	return result, nil
+}
+
+// LogKey 日志筛选用的 Key 条目
+type LogKey struct {
+	TokenID int    `json:"token_id"`
+	Name    string `json:"name"`
+}
+
+// GetMemberLogKeys 获取当前成员可用于日志筛选的 Key 列表
+// 只包含用户级 API Key（所有成员现在都使用用户级 API Key）
+func (s *TeamService) GetMemberLogKeys(userID uint, slug string) ([]LogKey, error) {
+	team, err := s.teamRepo.FindBySlugLight(nil, slug)
+	if err != nil {
+		return nil, ErrTeamNotFound
+	}
+	_, err = s.memberRepo.FindByTeamAndUser(nil, team.ID, userID)
+	if err != nil {
+		return nil, ErrNotMember
+	}
+
+	keys := make([]LogKey, 0)
+
+	// 用户级 API Key
+	userKeys, err := s.userAPIKeyRepo.FindByUserID(userID)
+	if err == nil {
+		for _, k := range userKeys {
+			if k.TokenID > 0 {
+				keys = append(keys, LogKey{TokenID: k.TokenID, Name: k.Name})
+			}
+		}
+	}
+
+	return keys, nil
+}
+
+// buildTokenNameMap 构建 new-api tokenID -> modelgate 名称 的映射
+// 包括用户级 API Key（UserAPIKey）和团队成员 Key（TeamMember）
+func (s *TeamService) buildTokenNameMap(userID uint) map[int]string {
+	nameMap := make(map[int]string)
+
+	// 用户级 API Key
+	userKeys, err := s.userAPIKeyRepo.FindByUserID(userID)
+	if err == nil {
+		for _, k := range userKeys {
+			if k.TokenID > 0 {
+				nameMap[k.TokenID] = k.Name
+			}
+		}
+	}
+
+	// 团队成员 Key
+	members, err := s.memberRepo.FindByUserID(nil, userID)
+	if err == nil {
+		for _, m := range members {
+			if m.NewAPITokenID > 0 {
+				team, err := s.teamRepo.FindByID(nil, m.TeamID)
+				if err == nil && team != nil {
+					nameMap[m.NewAPITokenID] = team.Name
+				}
+			}
+		}
+	}
+
+	return nameMap
 }
 
 func generateRandomPassword(length int) string {

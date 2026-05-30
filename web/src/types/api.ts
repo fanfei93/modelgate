@@ -16,13 +16,13 @@ export interface UserBrief {
   username: string;
   email: string;
   display_name: string;
+  is_admin?: boolean;
 }
 
 export interface Team {
   id: number;
   name: string;
   slug: string;
-  new_api_user_id: number;
   owner_id: number;
   balance: number;
   status: string;
@@ -30,6 +30,17 @@ export interface Team {
   updated_at: string;
   members?: TeamMember[];
   invitations?: TeamInvitation[];
+}
+
+export interface AdminTeamItem {
+  id: number;
+  name: string;
+  slug: string;
+  owner_id: number;
+  balance: number;
+  status: string;
+  member_count: number;
+  created_at: string;
 }
 
 export interface TeamMember {
@@ -92,4 +103,37 @@ export interface LogItem {
   ip: string;
   request_id: string;
   other: string;
+}
+
+export interface PaginatedLogs {
+  items: LogItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface LogsQuery {
+  page?: number;
+  page_size?: number;
+  token_id?: number;
+  token_name?: string;
+  model_name?: string;
+  start_timestamp?: number;
+  end_timestamp?: number;
+}
+
+export interface LogKey {
+  token_id: number;
+  name: string;
+}
+
+export interface UserAPIKey {
+  id: number;
+  user_id: number;
+  name: string;
+  key?: string;       // 仅创建/单独获取时返回完整密钥
+  key_mask?: string;  // 列表返回脱敏密钥
+  status: number;     // 1: 启用, 2: 禁用
+  created_at: string;
+  updated_at: string;
 }

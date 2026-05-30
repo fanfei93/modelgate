@@ -57,6 +57,7 @@ func main() {
 		&model.TeamInvitation{},
 		&model.QuotaAllocation{},
 		&model.VerificationCode{},
+		&model.UserAPIKey{},
 	); err != nil {
 		log.Fatalf("数据库迁移失败: %v", err)
 	}
@@ -66,6 +67,7 @@ func main() {
 	userRepo := repository.NewUserRepo(db)
 	teamRepo := repository.NewTeamRepo(db)
 	memberRepo := repository.NewMemberRepo(db)
+	userAPIKeyRepo := repository.NewUserAPIKeyRepo(db)
 	invitationRepo := repository.NewInvitationRepo(db)
 	quotaAllocRepo := repository.NewQuotaAllocationRepo(db)
 	vcRepo := repository.NewVerificationCodeRepo(db)
@@ -73,12 +75,15 @@ func main() {
 	newAPIClient := newapi.NewClient(cfg.NewAPI.BaseURL, cfg.NewAPI.AdminKey, cfg.NewAPI.AdminUserID)
 	emailService := service.NewEmailService(cfg.SMTP, vcRepo)
 
-	authService := service.NewAuthService(userRepo)
-	teamService := service.NewTeamService(db, teamRepo, memberRepo, userRepo, invitationRepo, quotaAllocRepo, newAPIClient, emailService, cfg.Server.BaseURL)
+	authService := service.NewAuthService(userRepo, newAPIClient)
+	teamService := service.NewTeamService(db, teamRepo, memberRepo, userRepo, userAPIKeyRepo, invitationRepo, quotaAllocRepo, newAPIClient, emailService, cfg.Server.BaseURL)
 	teamService.InitQuotaPerUnit() // 从 new-api 动态获取 QuotaPerUnit 换算因子
 
-	authHandler := handler.NewAuthHandler(authService, teamService, emailService, cfg.JWT.Secret, cfg.JWT.ExpireHours)
+	adminService := service.NewAdminService(db, teamRepo, memberRepo)
+
+	authHandler := handler.NewAuthHandler(authService, teamService, emailService, cfg.JWT.Secret, cfg.JWT.ExpireHours, cfg.AdminEmails)
 	teamHandler := handler.NewTeamHandler(teamService)
+	adminHandler := handler.NewAdminHandler(adminService)
 
 	// 创建路由
 	r := gin.Default()
@@ -121,7 +126,14 @@ func main() {
 	{
 		protected.GET("/auth/me", authHandler.Me)
 
-		// API Keys 管理
+		// API Keys 管理（用户级别，无需关联团队，支持多 Key）
+		protected.GET("/me/keys", teamHandler.ListUserKeys)
+		protected.POST("/me/keys", teamHandler.CreateUserKey)
+		protected.GET("/me/keys/:id", teamHandler.GetUserKey)
+		protected.PUT("/me/keys/:id/toggle", teamHandler.ToggleUserKey)
+		protected.DELETE("/me/keys/:id", teamHandler.DeleteUserKey)
+
+		// API Keys 管理（旧版，按团队展示）
 		protected.GET("/me/api-keys", teamHandler.GetMyAPIKeys)
 
 		// 团队管理
@@ -140,11 +152,20 @@ func main() {
 			teams.POST("/:slug/members/me/key", teamHandler.CreateMemberKey)
 			teams.PUT("/:slug/members/me/key", teamHandler.ToggleMemberKey)
 			teams.GET("/:slug/members/me/logs", teamHandler.GetMemberLogs)
+			teams.GET("/:slug/members/me/log-keys", teamHandler.GetMemberLogKeys)
 
 			// 成员配额管理
 			teams.GET("/:slug/members/:memberId/quota", teamHandler.GetMemberQuota)
 			teams.PUT("/:slug/members/:memberId/quota", teamHandler.SetMemberQuota)
 			teams.DELETE("/:slug/members/:memberId/quota", teamHandler.RevokeMemberQuota)
+		}
+
+		// 管理员路由
+		admin := protected.Group("/admin")
+		admin.Use(middleware.AdminRequired(cfg.AdminEmails))
+		{
+			admin.GET("/teams", adminHandler.ListTeams)
+			admin.POST("/teams/:slug/recharge", adminHandler.RechargeTeam)
 		}
 	}
 

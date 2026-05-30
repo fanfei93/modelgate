@@ -1,5 +1,26 @@
 import client from './client';
-import type { ApiResponse, Team, APIKeySummary, QuotaInfo, LogItem } from '../types/api';
+import type { ApiResponse, Team, QuotaInfo, LogItem, PaginatedLogs, LogsQuery, LogKey, UserAPIKey } from '../types/api';
+
+// --- 用户级别 API Key（不关联团队，支持多 Key） ---
+export async function createMyKey(name: string) {
+  return client.post<ApiResponse<{ id: number; key: string; key_mask: string; name: string; status: number }>>('/me/keys', { name });
+}
+
+export async function listMyKeys() {
+  return client.get<ApiResponse<UserAPIKey[]>>('/me/keys');
+}
+
+export async function getMyKey(keyId: number) {
+  return client.get<ApiResponse<{ id: number; key: string; key_mask: string; name: string; status: number }>>(`/me/keys/${keyId}`);
+}
+
+export async function toggleMyKey(keyId: number) {
+  return client.put<ApiResponse<{ key_status: number }>>(`/me/keys/${keyId}/toggle`);
+}
+
+export async function deleteMyKey(keyId: number) {
+  return client.delete<ApiResponse>(`/me/keys/${keyId}`);
+}
 
 // --- 团队 CRUD ---
 export async function createTeam(name: string) {
@@ -18,22 +39,7 @@ export async function deleteTeam(slug: string) {
   return client.delete<ApiResponse>(`/teams/${slug}`);
 }
 
-// --- 成员 API Key ---
-export async function getMyApiKeys() {
-  return client.get<ApiResponse<APIKeySummary[]>>('/me/api-keys');
-}
-
-export async function getMyKey(slug: string) {
-  return client.get<ApiResponse<{ key: string }>>(`/teams/${slug}/members/me/key`);
-}
-
-export async function createMyKey(slug: string) {
-  return client.post<ApiResponse<{ key: string }>>(`/teams/${slug}/members/me/key`);
-}
-
-export async function toggleMyKey(slug: string) {
-  return client.put<ApiResponse<{ key_status: number }>>(`/teams/${slug}/members/me/key`);
-}
+// --- 成员 API Key（保留旧接口，TeamDetail 中设置配额时会用到内部逻辑） ---
 
 // --- 成员管理 ---
 export async function addMembers(slug: string, entries: { name: string; email: string }[]) {
@@ -62,6 +68,19 @@ export async function revokeMemberQuota(slug: string, memberId: number) {
 }
 
 // --- 成员日志 ---
-export async function getMemberLogs(slug: string) {
-  return client.get<ApiResponse<LogItem[]>>(`/teams/${slug}/members/me/logs`);
+export async function getMemberLogs(slug: string, query?: LogsQuery) {
+  const params = new URLSearchParams();
+  if (query?.page) params.set('page', String(query.page));
+  if (query?.page_size) params.set('page_size', String(query.page_size));
+  if (query?.token_id) params.set('token_id', String(query.token_id));
+  if (query?.token_name) params.set('token_name', query.token_name);
+  if (query?.model_name) params.set('model_name', query.model_name);
+  if (query?.start_timestamp) params.set('start_timestamp', String(query.start_timestamp));
+  if (query?.end_timestamp) params.set('end_timestamp', String(query.end_timestamp));
+  const qs = params.toString();
+  return client.get<ApiResponse<PaginatedLogs>>(`/teams/${slug}/members/me/logs${qs ? '?' + qs : ''}`);
+}
+
+export async function getMemberLogKeys(slug: string) {
+  return client.get<ApiResponse<LogKey[]>>(`/teams/${slug}/members/me/log-keys`);
 }

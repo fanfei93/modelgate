@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import * as teamApi from '../../api/team';
 import { useAuth } from '../../hooks/useAuth';
-import type { Team, QuotaInfo, LogItem } from '../../types/api';
+import type { Team, QuotaInfo, LogItem, PaginatedLogs, LogsQuery, LogKey } from '../../types/api';
 
 function formatBalance(cents: number) {
   return (cents / 100).toFixed(2);
@@ -11,6 +11,193 @@ function formatBalance(cents: number) {
 function formatTime(ts: number) {
   const d = new Date(ts * 1000);
   return d.toLocaleString('zh-CN');
+}
+
+// ============ 日志面板（筛选 + 分页） ============
+
+function LogsPanel({ slug }: { slug: string }) {
+  const [logsData, setLogsData] = useState<PaginatedLogs | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  // 筛选条件
+  const [selectedTokenID, setSelectedTokenID] = useState<number | ''>('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+
+  // Key 列表
+  const [logKeys, setLogKeys] = useState<LogKey[]>([]);
+  const [keysLoading, setKeysLoading] = useState(true);
+
+  // 加载 Key 列表
+  useEffect(() => {
+    if (!slug) return;
+    setKeysLoading(true);
+    teamApi.getMemberLogKeys(slug)
+      .then(res => { setLogKeys(res.data.data || []); })
+      .catch(() => { setLogKeys([]); })
+      .finally(() => { setKeysLoading(false); });
+  }, [slug]);
+
+  const fetchLogs = useCallback(async (p: number = 1) => {
+    if (!slug) return;
+    setLoading(true);
+    setError('');
+    const q: LogsQuery = { page: p, page_size: pageSize };
+    if (selectedTokenID) q.token_id = Number(selectedTokenID);
+    if (startDate) q.start_timestamp = Math.floor(new Date(startDate).getTime() / 1000);
+    if (endDate) q.end_timestamp = Math.floor(new Date(endDate + 'T23:59:59').getTime() / 1000);
+    try {
+      const res = await teamApi.getMemberLogs(slug, q);
+      const data = res.data.data;
+      if (data) {
+        setLogsData(data);
+        setPage(p);
+      } else {
+        setLogsData({ items: [], total: 0, page: p, page_size: pageSize });
+      }
+    } catch (err: unknown) {
+      const ae = err as { response?: { data?: { error?: string } } };
+      setError(ae?.response?.data?.error || '获取日志失败');
+    } finally { setLoading(false); }
+  }, [slug, selectedTokenID, startDate, endDate]);
+
+  useEffect(() => { fetchLogs(1); }, [fetchLogs]);
+
+  const totalPages = logsData ? Math.max(1, Math.ceil(logsData.total / pageSize)) : 1;
+  const items = logsData?.items || [];
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    fetchLogs(1);
+  };
+
+  const handleReset = () => {
+    setSelectedTokenID('');
+    setStartDate('');
+    setEndDate('');
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 mt-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-bold text-gray-900">使用日志</h3>
+        <button onClick={() => fetchLogs(page)} disabled={loading}
+          className="text-xs text-blue-600 hover:text-blue-800 font-medium disabled:opacity-50">
+          刷新
+        </button>
+      </div>
+
+      {/* 筛选栏 */}
+      <form onSubmit={handleSearch} className="mb-4 flex flex-wrap items-end gap-3">
+        <div className="min-w-[180px]">
+          <label className="block text-xs font-medium text-gray-500 mb-1">API Key</label>
+          <select value={selectedTokenID} onChange={(e) => setSelectedTokenID(e.target.value ? Number(e.target.value) : '')}
+            disabled={keysLoading}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white disabled:bg-gray-50 disabled:text-gray-400">
+            <option value="">全部 Key</option>
+            {logKeys.map(k => (
+              <option key={k.token_id} value={k.token_id}>{k.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="min-w-[150px]">
+          <label className="block text-xs font-medium text-gray-500 mb-1">开始时间</label>
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+        </div>
+        <div className="min-w-[150px]">
+          <label className="block text-xs font-medium text-gray-500 mb-1">结束时间</label>
+          <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+        </div>
+        <div className="flex gap-2">
+          <button type="submit" disabled={loading}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+            搜索
+          </button>
+          <button type="button" onClick={handleReset}
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
+            重置
+          </button>
+        </div>
+      </form>
+
+      {/* 日志表格 */}
+      {loading ? (
+        <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" /></div>
+      ) : error ? (
+        <div className="bg-red-50 border border-red-200 text-red-600 rounded-lg px-4 py-2.5 text-sm">{error}</div>
+      ) : items.length === 0 ? (
+        <div className="text-center py-8 text-gray-400 text-sm">暂无使用记录</div>
+      ) : (
+        <>
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr className="border-b border-gray-200">
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">时间</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">Key</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">模型</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Token 消耗</th>
+                  <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">费用</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {items.map((log: LogItem) => (
+                  <tr key={log.id} className="hover:bg-gray-50/50">
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatTime(log.created_at)}</td>
+                    <td className="px-4 py-3">
+                      <span className="text-xs font-mono text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">{log.token_name || '-'}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-sm font-medium text-gray-900">{log.model_name || '-'}</span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-gray-600">
+                      <span className="text-xs mr-1">P:</span>{log.prompt_tokens}
+                      <span className="text-xs mx-1">C:</span>{log.completion_tokens}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <span className="text-sm font-medium text-gray-900">¥{formatBalance(log.quota)}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 分页 */}
+          {logsData && logsData.total > pageSize && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-xs text-gray-500">
+                共 {logsData.total} 条记录，第 {page}/{totalPages} 页
+              </p>
+              <div className="flex items-center gap-1">
+                <button onClick={() => fetchLogs(1)} disabled={page <= 1}
+                  className="px-2.5 py-1.5 text-xs rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                  首页
+                </button>
+                <button onClick={() => fetchLogs(page - 1)} disabled={page <= 1}
+                  className="px-2.5 py-1.5 text-xs rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                  上一页
+                </button>
+                <button onClick={() => fetchLogs(page + 1)} disabled={page >= totalPages}
+                  className="px-2.5 py-1.5 text-xs rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                  下一页
+                </button>
+                <button onClick={() => fetchLogs(totalPages)} disabled={page >= totalPages}
+                  className="px-2.5 py-1.5 text-xs rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                  末页
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 // ============ 所有者视图 ============
@@ -37,9 +224,6 @@ function OwnerView({ team, slug, user, fetchTeam }: {
   // 拥有者自己的使用记录
   const [myQuotaInfo, setMyQuotaInfo] = useState<QuotaInfo | null>(null);
   const [myQuotaLoading, setMyQuotaLoading] = useState(true);
-  const [myLogs, setMyLogs] = useState<LogItem[]>([]);
-  const [myLogsLoading, setMyLogsLoading] = useState(true);
-  const [myLogsError, setMyLogsError] = useState('');
 
   // 找到拥有者自己的成员记录
   const myMember = team.members?.find((m) => m.user_id === user?.id);
@@ -125,7 +309,7 @@ function OwnerView({ team, slug, user, fetchTeam }: {
     } finally { setQuotaLoading(false); }
   };
 
-  // 获取自己的额度和使用日志
+  // 获取自己的额度
   const fetchMyQuota = useCallback(async () => {
     if (!myMember || !slug) return;
     setMyQuotaLoading(true);
@@ -136,20 +320,7 @@ function OwnerView({ team, slug, user, fetchTeam }: {
     finally { setMyQuotaLoading(false); }
   }, [slug, myMember?.id]);
 
-  const fetchMyLogs = useCallback(async () => {
-    if (!slug) return;
-    setMyLogsLoading(true);
-    setMyLogsError('');
-    try {
-      const res = await teamApi.getMemberLogs(slug);
-      setMyLogs(res.data.data || []);
-    } catch (err: unknown) {
-      const ae = err as { response?: { data?: { error?: string } } };
-      setMyLogsError(ae?.response?.data?.error || '获取日志失败');
-    } finally { setMyLogsLoading(false); }
-  }, [slug]);
-
-  useEffect(() => { fetchMyQuota(); fetchMyLogs(); }, [fetchMyQuota, fetchMyLogs]);
+  useEffect(() => { fetchMyQuota(); }, [fetchMyQuota]);
 
   const myAllocated = myQuotaInfo?.quota_allocated || myMember?.quota_allocated || 0;
   const myUsed = myQuotaInfo?.quota_used || myMember?.quota_used || 0;
@@ -406,53 +577,7 @@ function OwnerView({ team, slug, user, fetchTeam }: {
       </div>
 
       {/* 使用日志 */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 mt-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-gray-900">使用日志</h3>
-          <button onClick={fetchMyLogs} disabled={myLogsLoading}
-            className="text-xs text-blue-600 hover:text-blue-800 font-medium disabled:opacity-50">
-            刷新
-          </button>
-        </div>
-
-        {myLogsLoading ? (
-          <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" /></div>
-        ) : myLogsError ? (
-          <div className="bg-red-50 border border-red-200 text-red-600 rounded-lg px-4 py-2.5 text-sm">{myLogsError}</div>
-        ) : myLogs.length === 0 ? (
-          <div className="text-center py-8 text-gray-400 text-sm">暂无使用记录</div>
-        ) : (
-          <div className="border border-gray-200 rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr className="border-b border-gray-200">
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">时间</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">模型</th>
-                  <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Token 消耗</th>
-                  <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">费用</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {myLogs.map((log) => (
-                  <tr key={log.id} className="hover:bg-gray-50/50">
-                    <td className="px-4 py-3 text-gray-600">{formatTime(log.created_at)}</td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm font-medium text-gray-900">{log.model_name || '-'}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right text-gray-600">
-                      <span className="text-xs mr-1">P:</span>{log.prompt_tokens}
-                      <span className="text-xs mx-1">C:</span>{log.completion_tokens}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <span className="text-sm font-medium text-gray-900">¥{formatBalance(log.quota)}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <LogsPanel slug={slug} />
     </div>
   );
 }
@@ -463,9 +588,6 @@ function MemberView({ team, slug }: { team: Team; slug: string }) {
   const { user } = useAuth();
   const [quotaInfo, setQuotaInfo] = useState<QuotaInfo | null>(null);
   const [quotaLoading, setQuotaLoading] = useState(true);
-  const [logs, setLogs] = useState<LogItem[]>([]);
-  const [logsLoading, setLogsLoading] = useState(true);
-  const [logsError, setLogsError] = useState('');
 
   // 找到当前用户对应的成员记录
   const myMember = team.members?.find((m) => m.user_id === user?.id);
@@ -480,20 +602,7 @@ function MemberView({ team, slug }: { team: Team; slug: string }) {
     finally { setQuotaLoading(false); }
   }, [slug, myMember?.id]);
 
-  const fetchLogs = useCallback(async () => {
-    if (!slug) return;
-    setLogsLoading(true);
-    setLogsError('');
-    try {
-      const res = await teamApi.getMemberLogs(slug);
-      setLogs(res.data.data || []);
-    } catch (err: unknown) {
-      const ae = err as { response?: { data?: { error?: string } } };
-      setLogsError(ae?.response?.data?.error || '获取日志失败');
-    } finally { setLogsLoading(false); }
-  }, [slug]);
-
-  useEffect(() => { fetchQuota(); fetchLogs(); }, [fetchQuota, fetchLogs]);
+  useEffect(() => { fetchQuota(); }, [fetchQuota]);
 
   const allocated = quotaInfo?.quota_allocated || myMember?.quota_allocated || 0;
   const used = quotaInfo?.quota_used || myMember?.quota_used || 0;
@@ -524,53 +633,7 @@ function MemberView({ team, slug }: { team: Team; slug: string }) {
       </div>
 
       {/* 使用日志 */}
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-gray-900">使用日志</h3>
-          <button onClick={fetchLogs} disabled={logsLoading}
-            className="text-xs text-blue-600 hover:text-blue-800 font-medium disabled:opacity-50">
-            刷新
-          </button>
-        </div>
-
-        {logsLoading ? (
-          <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" /></div>
-        ) : logsError ? (
-          <div className="bg-red-50 border border-red-200 text-red-600 rounded-lg px-4 py-2.5 text-sm">{logsError}</div>
-        ) : logs.length === 0 ? (
-          <div className="text-center py-8 text-gray-400 text-sm">暂无使用记录</div>
-        ) : (
-          <div className="border border-gray-200 rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr className="border-b border-gray-200">
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">时间</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-gray-500">模型</th>
-                  <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">Token 消耗</th>
-                  <th className="text-right px-4 py-2.5 text-xs font-medium text-gray-500">费用</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {logs.map((log) => (
-                  <tr key={log.id} className="hover:bg-gray-50/50">
-                    <td className="px-4 py-3 text-gray-600">{formatTime(log.created_at)}</td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm font-medium text-gray-900">{log.model_name || '-'}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right text-gray-600">
-                      <span className="text-xs mr-1">P:</span>{log.prompt_tokens}
-                      <span className="text-xs mx-1">C:</span>{log.completion_tokens}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <span className="text-sm font-medium text-gray-900">{formatBalance(log.quota)}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <LogsPanel slug={slug} />
     </div>
   );
 }

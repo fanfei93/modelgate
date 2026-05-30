@@ -7,11 +7,12 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	JWT      JWTConfig      `yaml:"jwt"`
-	Database DatabaseConfig `yaml:"database"`
-	NewAPI   NewAPIConfig   `yaml:"new_api"`
-	SMTP     SMTPConfig     `yaml:"smtp"`
+	Server      ServerConfig   `yaml:"server"`
+	JWT         JWTConfig      `yaml:"jwt"`
+	Database    DatabaseConfig `yaml:"database"`
+	NewAPI      NewAPIConfig   `yaml:"new_api"`
+	SMTP        SMTPConfig     `yaml:"smtp"`
+	AdminEmails []string       `yaml:"admin_emails"` // 超管邮箱列表
 }
 
 type ServerConfig struct {

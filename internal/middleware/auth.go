@@ -11,6 +11,7 @@ import (
 type Claims struct {
 	UserID   uint   `json:"user_id"`
 	Username string `json:"username"`
+	Email    string `json:"email"`
 	jwt.RegisteredClaims
 }
 
@@ -45,6 +46,23 @@ func AuthRequired(jwtSecret string) gin.HandlerFunc {
 
 		c.Set("user_id", claims.UserID)
 		c.Set("username", claims.Username)
+		c.Set("email", claims.Email)
+		c.Next()
+	}
+}
+
+// AdminRequired 检查当前用户是否为超级管理员
+func AdminRequired(adminEmails []string) gin.HandlerFunc {
+	emailSet := make(map[string]bool, len(adminEmails))
+	for _, e := range adminEmails {
+		emailSet[e] = true
+	}
+	return func(c *gin.Context) {
+		email, ok := c.Get("email")
+		if !ok || !emailSet[email.(string)] {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "无管理员权限"})
+			return
+		}
 		c.Next()
 	}
 }

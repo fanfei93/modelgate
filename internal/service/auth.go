@@ -2,8 +2,11 @@ package service
 
 import (
 	"errors"
+	"fmt"
+	"log"
 
 	"github.com/modelgate/internal/model"
+	"github.com/modelgate/internal/newapi"
 	"github.com/modelgate/internal/repository"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -16,11 +19,12 @@ var (
 )
 
 type AuthService struct {
-	userRepo *repository.UserRepo
+	userRepo      *repository.UserRepo
+	newAPIClient  *newapi.Client
 }
 
-func NewAuthService(userRepo *repository.UserRepo) *AuthService {
-	return &AuthService{userRepo: userRepo}
+func NewAuthService(userRepo *repository.UserRepo, newAPIClient *newapi.Client) *AuthService {
+	return &AuthService{userRepo: userRepo, newAPIClient: newAPIClient}
 }
 
 func (s *AuthService) Register(username, email, password string) (*model.User, error) {
@@ -42,11 +46,26 @@ func (s *AuthService) Register(username, email, password string) (*model.User, e
 		return nil, err
 	}
 
+	// 在 new-api 中创建对应的内部用户
+	newAPIPassword := generateRandomPassword(20)
+	newAPIName := fmt.Sprintf("mg_%s", username)
+	if len(newAPIName) > 20 {
+		newAPIName = newAPIName[:20]
+	}
+	newAPIEmail := fmt.Sprintf("%s@modelgate.local", username)
+	newAPIUserID, err := s.newAPIClient.RegisterUserWithUsername(newAPIName, newAPIEmail, newAPIPassword)
+	if err != nil {
+		return nil, fmt.Errorf("创建API账户失败: %w", err)
+	}
+	log.Printf("[INFO] 用户 %s 的 new-api 账户创建成功 (ID=%d)", username, newAPIUserID)
+
 	user := &model.User{
-		Username:     username,
-		Email:        email,
-		PasswordHash: string(hash),
-		DisplayName:  username,
+		Username:       username,
+		Email:          email,
+		PasswordHash:   string(hash),
+		DisplayName:    username,
+		NewAPIUserID:   newAPIUserID,
+		NewAPIPassword: newAPIPassword,
 	}
 	if err := s.userRepo.Create(user); err != nil {
 		return nil, err
