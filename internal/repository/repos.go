@@ -222,6 +222,32 @@ func (r *MemberRepo) SumQuotaAllocatedExcept(tx *gorm.DB, teamID, excludeMemberI
 	return sum, err
 }
 
+// SumQuotaAllocatedByUserID 计算用户在所有团队中的已分配额度总和
+func (r *MemberRepo) SumQuotaAllocatedByUserID(tx *gorm.DB, userID uint) (int64, error) {
+	if tx == nil {
+		tx = r.db
+	}
+	var sum int64
+	err := tx.Model(&model.TeamMember{}).
+		Where("user_id = ?", userID).
+		Select("COALESCE(SUM(quota_allocated), 0)").
+		Scan(&sum).Error
+	return sum, err
+}
+
+// SumQuotaUsedByUserID 计算用户在所有团队中的已使用额度总和
+func (r *MemberRepo) SumQuotaUsedByUserID(tx *gorm.DB, userID uint) (int64, error) {
+	if tx == nil {
+		tx = r.db
+	}
+	var sum int64
+	err := tx.Model(&model.TeamMember{}).
+		Where("user_id = ?", userID).
+		Select("COALESCE(SUM(quota_used), 0)").
+		Scan(&sum).Error
+	return sum, err
+}
+
 // --- InvitationRepo ---
 
 func (r *InvitationRepo) Create(inv *model.TeamInvitation) error {

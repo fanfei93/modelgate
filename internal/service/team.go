@@ -27,6 +27,7 @@ var (
 	ErrNotMember             = errors.New("不是团队成员")
 	ErrTeamSlugExists        = errors.New("团队标识已被占用")
 	ErrInsufficientBalance   = errors.New("团队额度不足，无法分配")
+	ErrQuotaBelowUsed        = errors.New("设置的额度不能低于已使用的额度")
 	ErrMaxTeamLimit          = errors.New("每个用户只能加入或创建一个团队")
 )
 
@@ -169,18 +170,8 @@ func (s *TeamService) GetTeamBySlug(slug string) (*model.Team, error) {
 	if err != nil {
 		return nil, ErrTeamNotFound
 	}
-	// 从 new-api 同步各成员额度并脱敏 API Key
+	// 脱敏 API Key（额度信息使用本地缓存，不再从 new-api 同步团队 token）
 	for i := range team.Members {
-		member := &team.Members[i]
-		if member.NewAPITokenID > 0 {
-			if tokenInfo, tokErr := s.newAPIClient.AdminGetTokenInfo(member.NewAPITokenID); tokErr == nil {
-				member.QuotaAllocated = int64(tokenInfo.RemainQuota+tokenInfo.UsedQuota) / s.quotaTokensPerCent()
-				member.QuotaUsed = int64(tokenInfo.UsedQuota) / s.quotaTokensPerCent()
-				_ = s.memberRepo.Update(nil, member)
-			} else {
-				log.Printf("[WARN] 同步成员 %d (token=%d) 额度失败: %v", member.ID, member.NewAPITokenID, tokErr)
-			}
-		}
 		team.Members[i].NewAPIKeyMask = maskAPIKey(team.Members[i].NewAPIKey)
 	}
 	return team, nil
@@ -223,8 +214,9 @@ func (s *TeamService) SyncTeamQuota(team *model.Team) error {
 	return nil
 }
 
-// CreateMemberAPIKey 为当前成员创建个人 API Key
-// 在成员自己的 new-api 用户下创建 token
+// CreateMemberAPIKey 为当前成员创建个人 API Key（遗留接口）
+// 在成员自己的 new-api 用户下创建 token，设置 unlimited_quota=true
+// 计费由 user.Quota 控制（通过 syncUserQuota 同步）
 func (s *TeamService) CreateMemberAPIKey(userID uint, slug string) (string, error) {
 	team, err := s.teamRepo.FindBySlugLight(nil, slug)
 	if err != nil {
@@ -244,26 +236,16 @@ func (s *TeamService) CreateMemberAPIKey(userID uint, slug string) (string, erro
 		return "", fmt.Errorf("用户的 API 账户尚未创建，请联系管理员")
 	}
 
-	// 如果已有 key，先获取旧 token 的配额信息，以便重建时保留
-	var oldQuota *int
+	// 成员必须已被分配额度
+	if member.QuotaAllocated <= 0 {
+		return "", fmt.Errorf("尚未分配额度，请联系团队 Owner 先分配额度后再创建 API Key")
+	}
+
+	// 如果已有旧 token，删除
 	if member.NewAPITokenID > 0 {
-		if info, err := s.newAPIClient.AdminGetTokenInfo(member.NewAPITokenID); err == nil {
-			q := info.RemainQuota + info.UsedQuota
-			oldQuota = &q
-		}
-		// 删除旧 token
 		if err := s.newAPIClient.AdminDeleteToken(member.NewAPITokenID); err != nil {
 			log.Printf("[WARN] 删除旧 token (id=%d) 失败: %v", member.NewAPITokenID, err)
 		}
-	} else if member.QuotaAllocated > 0 {
-		// 首次创建 token，但成员已有分配额度，使用分配额度作为初始配额
-		q := int(member.QuotaAllocated * s.quotaTokensPerCent())
-		oldQuota = &q
-		log.Printf("[INFO] CreateAPIKey: 使用已分配额度 member=%d QuotaAllocated=%d(cents) q=%d(tokens)",
-			member.ID, member.QuotaAllocated, q)
-	} else {
-		// 成员尚未被分配额度，不能创建 API Key
-		return "", fmt.Errorf("尚未分配额度，请联系团队 Owner 先分配额度后再创建 API Key")
 	}
 
 	tokenName := fmt.Sprintf("mg_%s_%s", team.Slug, user.Username)
@@ -271,16 +253,10 @@ func (s *TeamService) CreateMemberAPIKey(userID uint, slug string) (string, erro
 		tokenName = tokenName[:30]
 	}
 
-	// 在成员自己的 new-api 用户下创建新 token，保留旧配额
-	if oldQuota != nil {
-		log.Printf("[INFO] CreateAPIKey user=%d member=%d newAPIUserID=%d oldQuota=%d",
-			userID, member.ID, user.NewAPIUserID, *oldQuota)
-	} else {
-		log.Printf("[INFO] CreateAPIKey user=%d member=%d newAPIUserID=%d oldQuota=nil QuotaAllocated=%d",
-			userID, member.ID, user.NewAPIUserID, member.QuotaAllocated)
-	}
+	// 创建 unlimited_quota=true 的 token（计费由 user.Quota 控制）
+	unlimited := true
 	tokenID, key, err := s.newAPIClient.AdminCreateTokenWithQuota(
-		user.NewAPIUserID, tokenName, oldQuota, nil,
+		user.NewAPIUserID, tokenName, nil, &unlimited,
 	)
 	if err != nil {
 		return "", fmt.Errorf("创建 API Key 失败: %w", err)
@@ -292,6 +268,9 @@ func (s *TeamService) CreateMemberAPIKey(userID uint, slug string) (string, erro
 	if err := s.memberRepo.Update(nil, member); err != nil {
 		log.Printf("[WARN] 更新成员 API key 失败: %v", err)
 	}
+
+	// CreateMemberAPIKey 不改变分配额度，无需同步 user.Quota
+	// user.Quota 由 SetMemberQuota 通过 syncUserQuotaDelta 管理
 
 	return key, nil
 }
@@ -699,7 +678,7 @@ type QuotaInfo struct {
 	HasKey         bool  `json:"has_key"`         // 是否已创建 API Key
 }
 
-// GetMemberQuotaInfo 获取成员额度信息（从 new-api 同步 token 配额）
+// GetMemberQuotaInfo 获取成员额度信息（从 new-api 同步 user.Quota 真实钱包余额）
 func (s *TeamService) GetMemberQuotaInfo(slug string, memberID uint) (*QuotaInfo, error) {
 	team, err := s.teamRepo.FindBySlugLight(nil, slug)
 	if err != nil {
@@ -718,24 +697,70 @@ func (s *TeamService) GetMemberQuotaInfo(slug string, memberID uint) (*QuotaInfo
 		HasKey:         member.NewAPIKey != "",
 	}
 
-	// 如果有 key，从 new-api 同步最新配额数据
-	if member.NewAPITokenID > 0 {
-		tokenInfo, err := s.newAPIClient.AdminGetTokenInfo(member.NewAPITokenID)
+	// 从 new-api 获取用户的真实钱包余额（user.Quota），这是计费的真正来源
+	user, err := s.userRepo.FindByID(member.UserID)
+	if err != nil {
+		return info, nil
+	}
+	if user.NewAPIUserID > 0 {
+		userInfo, err := s.newAPIClient.GetUserInfo(user.NewAPIUserID)
 		if err != nil {
-			log.Printf("[WARN] 获取 token 信息失败 member=%d token=%d: %v", memberID, member.NewAPITokenID, err)
-			// 返回本地缓存的金额
+			log.Printf("[WARN] 获取用户 new-api 信息失败 userID=%d newAPIUserID=%d: %v", member.UserID, user.NewAPIUserID, err)
 			return info, nil
 		}
-		info.QuotaRemain = int64(tokenInfo.RemainQuota) / s.quotaTokensPerCent()
-		info.QuotaUsed = int64(tokenInfo.UsedQuota) / s.quotaTokensPerCent()
+
+		// 计算用户在所有团队的总分配额度
+		totalAllocated, _ := s.memberRepo.SumQuotaAllocatedByUserID(nil, member.UserID)
+
+		// userInfo.Quota 是 new-api 中用户的剩余额度（quota tokens 单位）
+		remainCents := int64(userInfo.Quota) / s.quotaTokensPerCent()
+		usedCents := totalAllocated - remainCents
+		if usedCents < 0 {
+			usedCents = 0
+		}
+
+		info.QuotaRemain = remainCents
+		info.QuotaUsed = usedCents
 
 		// 更新本地缓存
-		member.QuotaAllocated = (int64(tokenInfo.RemainQuota) + int64(tokenInfo.UsedQuota)) / s.quotaTokensPerCent()
-		member.QuotaUsed = int64(tokenInfo.UsedQuota) / s.quotaTokensPerCent()
+		member.QuotaUsed = usedCents
 		_ = s.memberRepo.Update(nil, member)
 	}
 
 	return info, nil
+}
+
+// syncUserQuotaDelta 将额度增量同步到 new-api
+// new-api 中 user.Quota 是剩余额度（随 API 调用被扣减），不能直接用本地计算覆盖
+// 正确做法：先从 new-api 获取当前真实 user.Quota，再加上增量 delta
+// deltaCents > 0 表示增加分配，< 0 表示减少分配
+func (s *TeamService) syncUserQuotaDelta(userID uint, deltaCents int64) error {
+	user, err := s.userRepo.FindByID(userID)
+	if err != nil {
+		return fmt.Errorf("获取用户信息失败: %w", err)
+	}
+	if user.NewAPIUserID <= 0 {
+		return fmt.Errorf("用户 %s 的 API 账户尚未创建", user.Username)
+	}
+
+	// 从 new-api 获取用户当前真实剩余额度
+	userInfo, err := s.newAPIClient.GetUserInfo(user.NewAPIUserID)
+	if err != nil {
+		log.Printf("[WARN] syncUserQuotaDelta: 获取用户 new-api 信息失败 userID=%d: %v", user.NewAPIUserID, err)
+		// 获取失败时不覆盖，避免用错误数据覆盖真实额度
+		return nil
+	}
+
+	// 在当前真实剩余额度基础上加增量
+	newQuota := int64(userInfo.Quota) + deltaCents*int64(s.quotaTokensPerCent())
+	if newQuota < 0 {
+		newQuota = 0
+	}
+
+	log.Printf("[INFO] syncUserQuotaDelta userID=%d newAPIUserID=%d currentQuota=%d delta=%d(cents) newQuota=%d",
+		userID, user.NewAPIUserID, userInfo.Quota, deltaCents, newQuota)
+
+	return s.newAPIClient.AdminUpdateUserQuota(user.NewAPIUserID, int(newQuota))
 }
 
 // SetMemberQuota 设置成员额度（仅 owner）
@@ -752,6 +777,33 @@ func (s *TeamService) SetMemberQuota(ownerID uint, slug string, memberID uint, a
 	member, err := s.memberRepo.FindByID(nil, memberID)
 	if err != nil || member.TeamID != team.ID {
 		return ErrNotMember
+	}
+
+	// 校验：设置的额度不能为负数
+	if amount < 0 {
+		return fmt.Errorf("分配额度不能为负数")
+	}
+
+	// 从 new-api 实时获取已使用额度（本地 quota_used 可能陈旧）
+	realUsedCents := member.QuotaUsed // 默认使用本地缓存
+	if memberUser, err := s.userRepo.FindByID(member.UserID); err == nil && memberUser.NewAPIUserID > 0 {
+		if userInfo, err := s.newAPIClient.GetUserInfo(memberUser.NewAPIUserID); err == nil {
+			totalAllocated, _ := s.memberRepo.SumQuotaAllocatedByUserID(nil, member.UserID)
+			remainCents := int64(userInfo.Quota) / s.quotaTokensPerCent()
+			calculated := totalAllocated - remainCents
+			if calculated < 0 {
+				calculated = 0
+			}
+			realUsedCents = calculated // 获取成功则覆盖
+		}
+	}
+
+	if amount < realUsedCents {
+		return fmt.Errorf("%w: 已使用 ¥%.2f，设置额度 ¥%.2f 不能低于已使用额度",
+			ErrQuotaBelowUsed,
+			float64(realUsedCents)/100,
+			float64(amount)/100,
+		)
 	}
 
 	// 校验团队额度是否充足
@@ -778,56 +830,41 @@ func (s *TeamService) SetMemberQuota(ownerID uint, slug string, memberID uint, a
 		return fmt.Errorf("成员 %s 的 API 账户尚未创建", user.Username)
 	}
 
-	q := int(amount * s.quotaTokensPerCent())
-	log.Printf("[INFO] SetMemberQuota member=%d newAPIUserID=%d amount=%d(sents) quotaTokensPerCent=%d q=%d",
-		memberID, user.NewAPIUserID, amount, s.quotaTokensPerCent(), q)
+	log.Printf("[INFO] SetMemberQuota member=%d newAPIUserID=%d amount=%d(cents) oldAllocated=%d(cents) quotaTokensPerCent=%d",
+		memberID, user.NewAPIUserID, amount, member.QuotaAllocated, s.quotaTokensPerCent())
 
-	// 同步用户级别的额度到 new-api（new-api 计费时先检查 user.Quota 再检查 token.RemainQuota）
-	if err := s.newAPIClient.AdminUpdateUserQuota(user.NewAPIUserID, q); err != nil {
-		log.Printf("[WARN] 同步用户 %d 额度到 new-api 失败: %v", user.NewAPIUserID, err)
-		// 不阻断流程，token 额度已设置
-	}
+	// 计算分配增量
+	deltaCents := amount - member.QuotaAllocated
 
-	// 根据成员 token 状态选择操作路径
-	if member.NewAPIKey == "" || member.NewAPITokenID <= 0 {
-		// 没有 API Key，或 NewAPITokenID 未记录（旧数据迁移场景，token 已存在于 new-api 但 modelgate 未记录其 ID）
-		// 创建新 token 并附带配额，旧 orphan token 随后可通过后台手动清理
-		if member.NewAPITokenID <= 0 && member.NewAPIKey != "" {
-			log.Printf("[INFO] 成员 %d 有 API Key 但 NewAPITokenID 未记录，将创建新 token", member.ID)
-		}
-		tokenName := fmt.Sprintf("mg_%s_%s", slug, user.Username)
-		if len(tokenName) > 30 {
-			tokenName = tokenName[:30]
-		}
-
-		tokenID, key, err := s.newAPIClient.AdminCreateTokenWithQuota(
-			user.NewAPIUserID, tokenName, &q, nil,
-		)
-		if err != nil {
-			return fmt.Errorf("创建 API Key 失败: %w", err)
-		}
-
-		member.NewAPITokenID = tokenID
-		member.NewAPIKey = key
-		member.NewAPIKeyStatus = 1
-	} else {
-		// 更新现有 token 的配额
-		if err := s.newAPIClient.AdminUpdateTokenQuota(member.NewAPITokenID, &q, nil); err != nil {
-			return fmt.Errorf("更新配额失败: %w", err)
-		}
-		// 配额更新后，如果 token 因之前额度耗尽被标记为 Exhausted(4)，
-		// 需要恢复为 Enabled(1)，否则后续 API 调用仍会返回 "Invalid token"
-		if member.NewAPIKeyStatus == 1 {
-			if err := s.newAPIClient.AdminUpdateTokenStatus(member.NewAPITokenID, 1); err != nil {
-				log.Printf("[WARN] 恢复 token 状态失败 tokenID=%d: %v", member.NewAPITokenID, err)
-			}
-		}
-	}
-
-	// 计算差额：新分配 - 旧分配
+	// 更新本地成员分配额度
 	member.QuotaAllocated = amount
 	if err := s.memberRepo.Update(nil, member); err != nil {
 		log.Printf("[WARN] 更新成员配额缓存失败: %v", err)
+	}
+
+	// 将增量同步到 new-api：在当前真实剩余额度基础上加 delta
+	if deltaCents != 0 {
+		if err := s.syncUserQuotaDelta(member.UserID, deltaCents); err != nil {
+			log.Printf("[WARN] 同步用户 %d 额度到 new-api 失败: %v", user.NewAPIUserID, err)
+		}
+	}
+
+	// 如果成员有旧的团队 token，也更新其配额（兼容旧数据，但计费已不依赖它）
+	if member.NewAPITokenID > 0 {
+		q := int(amount * s.quotaTokensPerCent())
+		if amount > 0 {
+			// 设置 token 为无限额度（计费由 user.Quota 控制），同时更新 remain_quota 保持数据一致
+			unlimited := true
+			if err := s.newAPIClient.AdminUpdateTokenQuota(member.NewAPITokenID, &q, &unlimited); err != nil {
+				log.Printf("[WARN] 更新 token 配额失败 tokenID=%d: %v", member.NewAPITokenID, err)
+			}
+			// 恢复 token 状态
+			if member.NewAPIKeyStatus == 1 {
+				if err := s.newAPIClient.AdminUpdateTokenStatus(member.NewAPITokenID, 1); err != nil {
+					log.Printf("[WARN] 恢复 token 状态失败 tokenID=%d: %v", member.NewAPITokenID, err)
+				}
+			}
+		}
 	}
 
 	// 记录分配日志

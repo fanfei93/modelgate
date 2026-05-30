@@ -288,6 +288,11 @@ function OwnerView({ team, slug, user, fetchTeam }: {
     const n = parseFloat(quotaAmount);
     if (isNaN(n) || n <= 0) { setQuotaError('请输入有效金额'); return; }
     const amount = Math.round(n * 100);
+    // 校验：设置的额度不能低于已使用的额度
+    if (quotaInfo && quotaInfo.quota_used > 0 && amount < quotaInfo.quota_used) {
+      setQuotaError(`设置的额度不能低于已使用的额度 ¥${(quotaInfo.quota_used / 100).toFixed(2)}`);
+      return;
+    }
     setQuotaError('');
     setQuotaLoading(true);
     try {
