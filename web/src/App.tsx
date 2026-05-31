@@ -15,6 +15,7 @@ import AdminTeams from './pages/dashboard/AdminTeams';
 import AdminSettings from './pages/dashboard/AdminSettings';
 import AdminLoginLogs from './pages/dashboard/AdminLoginLogs';
 import AdminRechargeLogs from './pages/dashboard/AdminRechargeLogs';
+import AdminUsers from './pages/dashboard/AdminUsers';
 import NotFound from './pages/NotFound';
 import { SiteConfigProvider } from './hooks/useSiteConfig';
 
@@ -45,6 +46,7 @@ export default function App() {
             <Route path="admin" element={<AdminLayout />}>
               <Route index element={<AdminTeams />} />
               <Route path="teams" element={<AdminTeams />} />
+              <Route path="users" element={<AdminUsers />} />
               <Route path="recharge-logs" element={<AdminRechargeLogs />} />
               <Route path="login-logs" element={<AdminLoginLogs />} />
               <Route path="settings" element={<AdminSettings />} />

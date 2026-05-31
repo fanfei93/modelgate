@@ -15,15 +15,16 @@ var (
 )
 
 type AdminService struct {
-	teamRepo       *repository.TeamRepo
-	memberRepo     *repository.MemberRepo
-	settingRepo    *repository.SiteSettingRepo
-	loginLogRepo   *repository.LoginLogRepo
+	teamRepo        *repository.TeamRepo
+	memberRepo      *repository.MemberRepo
+	settingRepo     *repository.SiteSettingRepo
+	loginLogRepo    *repository.LoginLogRepo
 	rechargeLogRepo *repository.RechargeLogRepo
-	db             *gorm.DB
+	userRepo        *repository.UserRepo
+	db              *gorm.DB
 }
 
-func NewAdminService(db *gorm.DB, teamRepo *repository.TeamRepo, memberRepo *repository.MemberRepo, settingRepo *repository.SiteSettingRepo, loginLogRepo *repository.LoginLogRepo, rechargeLogRepo *repository.RechargeLogRepo) *AdminService {
+func NewAdminService(db *gorm.DB, teamRepo *repository.TeamRepo, memberRepo *repository.MemberRepo, settingRepo *repository.SiteSettingRepo, loginLogRepo *repository.LoginLogRepo, rechargeLogRepo *repository.RechargeLogRepo, userRepo *repository.UserRepo) *AdminService {
 	return &AdminService{
 		db:              db,
 		teamRepo:        teamRepo,
@@ -31,6 +32,7 @@ func NewAdminService(db *gorm.DB, teamRepo *repository.TeamRepo, memberRepo *rep
 		settingRepo:     settingRepo,
 		loginLogRepo:    loginLogRepo,
 		rechargeLogRepo: rechargeLogRepo,
+		userRepo:        userRepo,
 	}
 }
 
@@ -247,4 +249,65 @@ func (s *AdminService) ListRechargeLogs(page, pageSize int) ([]RechargeLogItem, 
 		})
 	}
 	return items, total, nil
+}
+
+// --- 用户管理 ---
+
+// AdminUserItem 用户管理列表项 DTO
+type AdminUserItem struct {
+	ID          uint   `json:"id"`
+	Username    string `json:"username"`
+	Email       string `json:"email"`
+	DisplayName string `json:"display_name"`
+	Status      string `json:"status"`
+	IsAdmin     bool   `json:"is_admin"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// ListUsers 分页查询用户列表
+func (s *AdminService) ListUsers(page, pageSize int, keyword string) ([]AdminUserItem, int64, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	var users []model.User
+	var total int64
+
+	query := s.db.Model(&model.User{})
+	if keyword != "" {
+		like := "%" + keyword + "%"
+		query = query.Where("username LIKE ? OR email LIKE ? OR display_name LIKE ?", like, like, like)
+	}
+
+	query.Count(&total)
+	if err := query.Order("created_at DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&users).Error; err != nil {
+		return nil, 0, fmt.Errorf("获取用户列表失败: %w", err)
+	}
+
+	items := make([]AdminUserItem, 0, len(users))
+	for _, u := range users {
+		items = append(items, AdminUserItem{
+			ID:          u.ID,
+			Username:    u.Username,
+			Email:       u.Email,
+			DisplayName: u.DisplayName,
+			Status:      u.Status,
+			CreatedAt:   u.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+	return items, total, nil
+}
+
+// UpdateUserStatus 更新用户状态（启用/禁用）
+func (s *AdminService) UpdateUserStatus(userID uint, status string) error {
+	if status != "active" && status != "disabled" {
+		return fmt.Errorf("无效的状态值: %s", status)
+	}
+	return s.userRepo.UpdateStatus(userID, status)
 }

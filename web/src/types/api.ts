@@ -168,3 +168,13 @@ export interface RechargeLog {
   ip: string;
   created_at: string;
 }
+
+export interface AdminUserItem {
+  id: number;
+  username: string;
+  email: string;
+  display_name: string;
+  status: string;
+  is_admin: boolean;
+  created_at: string;
+}

@@ -1,5 +1,5 @@
 import client from './client';
-import type { ApiResponse, AdminTeamItem, SiteSetting, LoginLog, RechargeLog } from '../types/api';
+import type { ApiResponse, AdminTeamItem, SiteSetting, LoginLog, RechargeLog, AdminUserItem } from '../types/api';
 
 export async function listTeams() {
   return client.get<ApiResponse<AdminTeamItem[]>>('/admin/teams');
@@ -32,4 +32,14 @@ export async function listRechargeLogs(page = 1, pageSize = 20) {
 // 公开接口 - 获取站点配置（无需认证）
 export async function getSiteSettings() {
   return client.get<ApiResponse<SiteSetting[]>>('/site-settings');
+}
+
+export async function listUsers(page = 1, pageSize = 20, keyword = '') {
+  return client.get<ApiResponse<AdminUserItem[]>>('/admin/users', {
+    params: { page, page_size: pageSize, keyword },
+  });
+}
+
+export async function updateUserStatus(id: number, status: string) {
+  return client.put<ApiResponse>(`/admin/users/${id}/status`, { status });
 }

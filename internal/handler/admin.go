@@ -140,3 +140,54 @@ func (h *AdminHandler) ListRechargeLogs(c *gin.Context) {
 		"pageSize": pageSize,
 	})
 }
+
+// ListUsers 超管 - 查询用户列表
+// GET /api/admin/users?page=1&page_size=20&keyword=
+func (h *AdminHandler) ListUsers(c *gin.Context) {
+	page := 1
+	pageSize := 20
+	if p, err := strconv.Atoi(c.Query("page")); err == nil && p > 0 {
+		page = p
+	}
+	if ps, err := strconv.Atoi(c.Query("page_size")); err == nil && ps > 0 && ps <= 100 {
+		pageSize = ps
+	}
+	keyword := c.Query("keyword")
+
+	users, total, err := h.adminService.ListUsers(page, pageSize, keyword)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取用户列表失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data":     users,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
+}
+
+// UpdateUserStatus 超管 - 更新用户状态（启用/禁用）
+// PUT /api/admin/users/:id/status
+func (h *AdminHandler) UpdateUserStatus(c *gin.Context) {
+	userID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的用户ID"})
+		return
+	}
+
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+
+	if err := h.adminService.UpdateUserStatus(uint(userID), req.Status); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "状态更新成功"})
+}

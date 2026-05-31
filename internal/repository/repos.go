@@ -58,6 +58,21 @@ func (r *UserRepo) Update(u *model.User) error {
 	return r.db.Save(u).Error
 }
 
+func (r *UserRepo) List(page, pageSize int) ([]model.User, int64, error) {
+	var users []model.User
+	var total int64
+	r.db.Model(&model.User{}).Count(&total)
+	err := r.db.Order("created_at DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&users).Error
+	return users, total, err
+}
+
+func (r *UserRepo) UpdateStatus(id uint, status string) error {
+	return r.db.Model(&model.User{}).Where("id = ?", id).Update("status", status).Error
+}
+
 // --- TeamRepo ---
 
 func (r *TeamRepo) Create(tx *gorm.DB, team *model.Team) error {

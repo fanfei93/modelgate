@@ -89,7 +89,7 @@ func main() {
 	teamService := service.NewTeamService(db, teamRepo, memberRepo, userRepo, userAPIKeyRepo, invitationRepo, quotaAllocRepo, newAPIClient, logDB, emailService, cfg.Server.BaseURL)
 	teamService.InitQuotaPerUnit() // 从 new-api 动态获取 QuotaPerUnit 换算因子
 
-	adminService := service.NewAdminService(db, teamRepo, memberRepo, settingRepo, loginLogRepo, rechargeLogRepo)
+	adminService := service.NewAdminService(db, teamRepo, memberRepo, settingRepo, loginLogRepo, rechargeLogRepo, userRepo)
 
 	authHandler := handler.NewAuthHandler(authService, teamService, emailService, cfg.JWT.Secret, cfg.JWT.ExpireHours, cfg.AdminEmails)
 	teamHandler := handler.NewTeamHandler(teamService)
@@ -190,6 +190,8 @@ func main() {
 			admin.PUT("/settings/:key", adminHandler.UpdateSetting)
 			admin.GET("/login-logs", adminHandler.ListLoginLogs)
 			admin.GET("/recharge-logs", adminHandler.ListRechargeLogs)
+			admin.GET("/users", adminHandler.ListUsers)
+			admin.PUT("/users/:id/status", adminHandler.UpdateUserStatus)
 		}
 	}
 
