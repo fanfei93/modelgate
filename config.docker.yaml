@@ -16,6 +16,7 @@ new_api:
   base_url: "http://new-api:3000"
   admin_key: "6f4ef279609eff8802a9d74726b5b4c4"
   admin_user_id: 3
+  database_dsn: "modelgate:modelgate123@tcp(mysql:3306)/new-api-db?charset=utf8mb4&parseTime=True&loc=Local"
 
 admin_emails:
   - "admin@modelgate.local"

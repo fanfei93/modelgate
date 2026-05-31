@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import PublicNavbar from '../components/PublicNavbar';
 import { useAuth } from '../hooks/useAuth';
+import { useSiteConfig } from '../hooks/useSiteConfig';
 import client from '../api/client';
 
 /* ---------- 后端 pricing 接口返回类型 ---------- */
@@ -153,6 +154,7 @@ const categories = ['全部', '对话', '图片', '嵌入', '语音'];
 
 export default function ModelMarket() {
   const { user } = useAuth();
+  const { siteName } = useSiteConfig();
   const [models, setModels] = useState<ModelCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -209,7 +211,7 @@ export default function ModelMarket() {
         <div className="max-w-[1440px] mx-auto px-6 py-16">
           <h1 className="text-3xl sm:text-4xl font-extrabold text-gray-900">模型广场</h1>
           <p className="mt-3 text-lg text-gray-500 max-w-xl">
-            浏览 ModelGate 接入的全部 AI 模型，按分类和供应商筛选，找到最适合你的模型。
+            浏览 {siteName} 接入的全部 AI 模型，按分类和供应商筛选，找到最适合你的模型。
           </p>
 
           {/* Search & Filters */}
@@ -373,7 +375,7 @@ export default function ModelMarket() {
 
       <footer className="border-t border-gray-200 bg-white mt-16">
         <div className="max-w-[1440px] mx-auto px-6 py-8 text-center text-sm text-gray-400">
-          © {new Date().getFullYear()} ModelGate. All rights reserved.
+          © {new Date().getFullYear()} {siteName}. All rights reserved.
         </div>
       </footer>
     </div>

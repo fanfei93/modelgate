@@ -1,8 +1,10 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useSiteConfig } from '../hooks/useSiteConfig';
 
 export default function Login() {
+  const { siteName } = useSiteConfig();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -38,7 +40,7 @@ export default function Login() {
         <div className="text-center mb-8">
           <Link to="/" className="inline-block text-2xl font-bold">
             <span className="bg-gradient-to-r from-orange-400 to-red-500 bg-clip-text text-transparent">
-              ModelGate
+              {siteName}
             </span>
           </Link>
           <p className="mt-2 text-gray-500 text-sm">登录到你的账户</p>

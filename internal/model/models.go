@@ -12,8 +12,9 @@ type User struct {
 	Email          string         `gorm:"size:128;uniqueIndex;not null" json:"email"`
 	PasswordHash   string         `gorm:"size:256;not null" json:"-"`
 	DisplayName    string         `gorm:"size:128" json:"display_name"`
-	NewAPIUserID   int            `gorm:"default:0" json:"-"`          // 绑定的 new-api 用户 ID
-	NewAPIPassword string         `gorm:"size:256;default:''" json:"-"` // new-api 账户密码，用于创建 token
+	NewAPIUserID   int            `gorm:"default:0" json:"-"`          // 绑定的内部用户 ID
+	NewAPIPassword string         `gorm:"size:256;default:''" json:"-"` // 内部账户密码，用于创建 token
+	Status         string         `gorm:"size:16;not null;default:active" json:"status"` // active / disabled
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"-"`
@@ -24,8 +25,8 @@ type Team struct {
 	ID            uint           `gorm:"primaryKey" json:"id"`
 	Name          string         `gorm:"size:128;not null" json:"name"`
 	Slug          string         `gorm:"size:64;uniqueIndex;not null" json:"slug"`
-	NewAPIUserID  int            `gorm:"default:0" json:"-"`      // [废弃] 团队不再绑定 new-api 用户
-	NewAPIPassword string        `gorm:"size:256;default:''" json:"-"` // [废弃] 
+	NewAPIUserID  int            `gorm:"default:0" json:"-"`      // [废弃] 团队不再绑定内部用户
+	NewAPIPassword string        `gorm:"size:256;default:''" json:"-"` // [废弃]
 	OwnerID       uint           `gorm:"not null;index" json:"owner_id"`
 	Balance       int64          `gorm:"not null;default:0" json:"balance"` // 分为单位，由超管充值
 	Status        string         `gorm:"size:16;not null;default:active" json:"status"`
@@ -42,12 +43,12 @@ type TeamMember struct {
 	UserID          uint      `gorm:"uniqueIndex:uk_team_user;uniqueIndex:idx_member_user_id;not null" json:"user_id"`
 	Role            string    `gorm:"size:16;not null;default:member" json:"role"` // owner / member
 	JoinedAt        time.Time `json:"joined_at"`
-	NewAPITokenID   int       `gorm:"index" json:"-"`                             // new-api 中该成员的 token ID
-	NewAPIKey       string    `gorm:"size:256" json:"-"`                          // 成员的 API Key（存储在团队 new-api 用户下的 token）
+	NewAPITokenID   int       `gorm:"index" json:"-"`                             // 该成员的 token ID
+	NewAPIKey       string    `gorm:"size:256" json:"-"`                          // 成员的 API Key
 	NewAPIKeyStatus int       `gorm:"not null;default:0" json:"-"`                // 0: 未创建, 1: 启用, 2: 禁用
 	NewAPIKeyMask   string    `gorm:"-" json:"api_key_mask,omitempty"`            // 脱敏展示
-	QuotaAllocated  int64     `gorm:"not null;default:0" json:"quota_allocated"`  // 已分配额度（new-api 配额单位，本地缓存）
-	QuotaUsed       int64     `gorm:"not null;default:0" json:"quota_used"`       // 已使用额度（从 new-api token 同步，本地缓存）
+	QuotaAllocated  int64     `gorm:"not null;default:0" json:"quota_allocated"`  // 已分配额度（本地缓存）
+	QuotaUsed       int64     `gorm:"not null;default:0" json:"quota_used"`       // 已使用额度（本地缓存）
 	User            *User     `gorm:"foreignKey:UserID" json:"user,omitempty"`
 }
 
@@ -77,7 +78,7 @@ type QuotaAllocation struct {
 	MemberID  uint      `gorm:"not null;index" json:"member_id"`
 	OperatorID uint     `gorm:"not null" json:"operator_id"`                      // 操作者（owner）
 	Type      string    `gorm:"size:16;not null" json:"type"`                     // allocate / revoke
-	Amount    int64     `gorm:"not null" json:"amount"`                           // 分配/回收的额度（new-api 配额单位）
+	Amount    int64     `gorm:"not null" json:"amount"`                           // 分配/回收的额度
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -86,9 +87,36 @@ type UserAPIKey struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
 	UserID    uint      `gorm:"not null;index:idx_userapikey_user_id" json:"user_id"`
 	Name      string    `gorm:"size:128;not null" json:"name"`     // 用户自定义名称，如 "Production" / "Dev"
-	TokenID   int       `gorm:"index" json:"-"`                    // new-api 中的 token ID
+	TokenID   int       `gorm:"index" json:"-"`                    // 内部 token ID
 	Key       string    `gorm:"size:256;not null" json:"-"`        // 完整密钥（不直接序列化）
 	Status    int       `gorm:"not null;default:1" json:"status"`  // 1: 启用, 2: 禁用
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// LoginLog 用户登录日志
+type LoginLog struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	UserID    uint      `gorm:"index;not null" json:"user_id"`
+	Username  string    `gorm:"size:64;not null" json:"username"`
+	IP        string    `gorm:"size:64" json:"ip"`
+	UserAgent string    `gorm:"size:512" json:"user_agent"`
+	Success   bool      `gorm:"not null;default:false" json:"success"`
+	Reason    string    `gorm:"size:128" json:"reason"` // 失败原因
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// RechargeLog 团队充值审计日志
+type RechargeLog struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	TeamID        uint      `gorm:"index;not null" json:"team_id"`
+	TeamName      string    `gorm:"size:128;not null" json:"team_name"`
+	OperatorID    uint      `gorm:"not null" json:"operator_id"`
+	OperatorName  string    `gorm:"size:64;not null" json:"operator_name"`
+	Amount        int64     `gorm:"not null" json:"amount"`          // 充值金额（分）
+	BalanceBefore int64     `gorm:"not null" json:"balance_before"`  // 充值前余额（分）
+	BalanceAfter  int64     `gorm:"not null" json:"balance_after"`   // 充值后余额（分）
+	Remark        string    `gorm:"size:256" json:"remark"`          // 备注
+	IP            string    `gorm:"size:64" json:"ip"`               // 操作者 IP
+	CreatedAt     time.Time `json:"created_at"`
 }

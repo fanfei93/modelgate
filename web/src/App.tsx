@@ -10,37 +10,50 @@ import Account from './pages/dashboard/Account';
 import TeamManagement from './pages/dashboard/TeamManagement';
 import TeamDetail from './pages/dashboard/TeamDetail';
 import ApiKeysManagement from './pages/dashboard/ApiKeysManagement';
-import AdminDashboard from './pages/dashboard/AdminDashboard';
+import AdminLayout from './pages/dashboard/AdminLayout';
+import AdminTeams from './pages/dashboard/AdminTeams';
+import AdminSettings from './pages/dashboard/AdminSettings';
+import AdminLoginLogs from './pages/dashboard/AdminLoginLogs';
+import AdminRechargeLogs from './pages/dashboard/AdminRechargeLogs';
 import NotFound from './pages/NotFound';
+import { SiteConfigProvider } from './hooks/useSiteConfig';
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/models" element={<ModelMarket />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/register" element={<Register />} />
+    <SiteConfigProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/models" element={<ModelMarket />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
 
-        {/* Dashboard - protected */}
-        <Route
-          path="/dashboard"
-          element={
-            <ProtectedRoute>
-              <DashboardLayout />
-            </ProtectedRoute>
-          }
-        >
-          <Route index element={<Dashboard />} />
-          <Route path="account" element={<Account />} />
-          <Route path="api-keys" element={<ApiKeysManagement />} />
-          <Route path="teams" element={<TeamManagement />} />
-          <Route path="teams/:slug" element={<TeamDetail />} />
-          <Route path="admin" element={<AdminDashboard />} />
-        </Route>
+          {/* Dashboard - protected */}
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute>
+                <DashboardLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route index element={<Dashboard />} />
+            <Route path="account" element={<Account />} />
+            <Route path="api-keys" element={<ApiKeysManagement />} />
+            <Route path="teams" element={<TeamManagement />} />
+            <Route path="teams/:slug" element={<TeamDetail />} />
+            <Route path="admin" element={<AdminLayout />}>
+              <Route index element={<AdminTeams />} />
+              <Route path="teams" element={<AdminTeams />} />
+              <Route path="recharge-logs" element={<AdminRechargeLogs />} />
+              <Route path="login-logs" element={<AdminLoginLogs />} />
+              <Route path="settings" element={<AdminSettings />} />
+            </Route>
+          </Route>
 
-        <Route path="*" element={<NotFound />} />
-      </Routes>
-    </BrowserRouter>
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </BrowserRouter>
+    </SiteConfigProvider>
   );
 }

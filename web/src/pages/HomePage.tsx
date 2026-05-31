@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import PublicNavbar from '../components/PublicNavbar';
+import { useSiteConfig } from '../hooks/useSiteConfig';
 
 const features = [
   {
@@ -66,6 +67,8 @@ const stats = [
 ];
 
 export default function HomePage() {
+  const { siteName } = useSiteConfig();
+
   return (
     <div className="min-h-screen bg-white">
       <PublicNavbar />
@@ -92,7 +95,7 @@ export default function HomePage() {
             <span className="text-gradient">AI API 网关</span>
           </h1>
           <p className="mt-6 text-lg sm:text-xl text-gray-600 max-w-2xl mx-auto leading-relaxed">
-            ModelGate 为你提供统一的 AI 模型接入入口。管理团队、监控用量、控制成本，
+            {siteName} 为你提供统一的 AI 模型接入入口。管理团队、监控用量、控制成本，
             让 AI 开发更高效、更安全。
           </p>
           <div className="mt-10 flex items-center justify-center gap-4 flex-wrap">
@@ -132,7 +135,7 @@ export default function HomePage() {
       {/* Features */}
       <section className="max-w-[1440px] mx-auto px-6 py-24">
         <div className="text-center mb-16">
-          <h2 className="text-3xl sm:text-4xl font-bold text-gray-900">为什么选择 ModelGate？</h2>
+          <h2 className="text-3xl sm:text-4xl font-bold text-gray-900">为什么选择 {siteName}？</h2>
           <p className="mt-4 text-lg text-gray-500 max-w-xl mx-auto">
             为 AI 开发者和团队打造的全栈式 API 管理平台
           </p>
@@ -162,7 +165,7 @@ export default function HomePage() {
           </div>
           <div className="grid gap-8 sm:grid-cols-3 max-w-4xl mx-auto">
             {[
-              { step: '01', title: '注册账户', desc: '创建 ModelGate 账户，获取 API 访问凭证。' },
+              { step: '01', title: '注册账户', desc: `创建 ${siteName} 账户，获取 API 访问凭证。` },
               { step: '02', title: '创建团队', desc: '建立团队，邀请成员，统一管理 API 额度。' },
               { step: '03', title: '开始调用', desc: '使用统一 API 端点，接入所有需要的 AI 模型。' },
             ].map((s) => (
@@ -198,7 +201,7 @@ export default function HomePage() {
           <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
             <Link to="/" className="text-lg font-bold">
               <span className="bg-gradient-to-r from-orange-400 to-red-500 bg-clip-text text-transparent">
-                ModelGate
+                {siteName}
               </span>
             </Link>
             <div className="flex items-center gap-6 text-sm text-gray-500">
@@ -208,7 +211,7 @@ export default function HomePage() {
             </div>
           </div>
           <div className="mt-8 pt-6 border-t border-gray-100 text-center text-sm text-gray-400">
-            © {new Date().getFullYear()} ModelGate. All rights reserved.
+            © {new Date().getFullYear()} {siteName}. All rights reserved.
           </div>
         </div>
       </footer>

@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useSiteConfig } from '../hooks/useSiteConfig';
 
 export default function PublicNavbar() {
   const { user, isAuthenticated, logout } = useAuth();
+  const { siteName, menuArenaVisible, menuDocsVisible, menuDocsUrl } = useSiteConfig();
   const navigate = useNavigate();
   const location = useLocation();
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -28,8 +30,8 @@ export default function PublicNavbar() {
 
   const topLinks = [
     { to: '/models', label: '模型' },
-    { to: '/arena', label: '操练场' },
-    { to: '/docs', label: '文档' },
+    ...(menuArenaVisible ? [{ to: '/arena', label: '操练场' }] : []),
+    ...(menuDocsVisible ? [{ to: menuDocsUrl, label: '文档', external: menuDocsUrl.startsWith('http') }] : []),
   ];
 
   return (
@@ -39,7 +41,7 @@ export default function PublicNavbar() {
         <Link to="/" className="flex items-center gap-2.5">
           <span className="text-xl font-bold">
             <span className="bg-gradient-to-r from-orange-400 to-red-500 bg-clip-text text-transparent">
-              ModelGate
+              {siteName}
             </span>
           </span>
         </Link>
@@ -47,13 +49,25 @@ export default function PublicNavbar() {
         {/* 右侧: 导航链接 */}
         <div className="flex items-center gap-6">
           {topLinks.map((link) => (
-            <Link
-              key={link.to}
-              to={link.to}
-              className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
-            >
-              {link.label}
-            </Link>
+            link.external ? (
+              <a
+                key={link.to}
+                href={link.to}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                {link.label}
+              </a>
+            ) : (
+              <Link
+                key={link.to}
+                to={link.to}
+                className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
+              >
+                {link.label}
+              </Link>
+            )
           ))}
 
           {isAuthenticated ? (

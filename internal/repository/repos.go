@@ -10,6 +10,7 @@ type TeamRepo struct{ db *gorm.DB }
 type MemberRepo struct{ db *gorm.DB }
 type InvitationRepo struct{ db *gorm.DB }
 type QuotaAllocationRepo struct{ db *gorm.DB }
+type LoginLogRepo struct{ db *gorm.DB }
 
 func NewUserRepo(db *gorm.DB) *UserRepo     { return &UserRepo{db} }
 func NewTeamRepo(db *gorm.DB) *TeamRepo     { return &TeamRepo{db} }
@@ -18,6 +19,7 @@ func NewInvitationRepo(db *gorm.DB) *InvitationRepo { return &InvitationRepo{db}
 func NewQuotaAllocationRepo(db *gorm.DB) *QuotaAllocationRepo {
 	return &QuotaAllocationRepo{db}
 }
+func NewLoginLogRepo(db *gorm.DB) *LoginLogRepo { return &LoginLogRepo{db} }
 
 // --- UserRepo ---
 
@@ -50,6 +52,10 @@ func (r *UserRepo) FindByEmail(email string) (*model.User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+func (r *UserRepo) Update(u *model.User) error {
+	return r.db.Save(u).Error
 }
 
 // --- TeamRepo ---
@@ -359,4 +365,96 @@ func (r *VerificationCodeRepo) FindByEmail(email string) (*model.VerificationCod
 
 func (r *VerificationCodeRepo) DeleteByEmail(email string) error {
 	return r.db.Where("email = ?", email).Delete(&model.VerificationCode{}).Error
+}
+
+// --- SiteSettingRepo ---
+
+type SiteSettingRepo struct{ db *gorm.DB }
+
+func NewSiteSettingRepo(db *gorm.DB) *SiteSettingRepo {
+	return &SiteSettingRepo{db}
+}
+
+func (r *SiteSettingRepo) FindByKey(key string) (*model.SiteSetting, error) {
+	var s model.SiteSetting
+	err := r.db.Where("`key` = ?", key).First(&s).Error
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+func (r *SiteSettingRepo) FindAll() ([]model.SiteSetting, error) {
+	var settings []model.SiteSetting
+	err := r.db.Order("`key` ASC").Find(&settings).Error
+	return settings, err
+}
+
+func (r *SiteSettingRepo) Upsert(setting *model.SiteSetting) error {
+	return r.db.Save(setting).Error
+}
+
+// UpdateValue 按 key 更新 value
+func (r *SiteSettingRepo) UpdateValue(key, value string) error {
+	return r.db.Model(&model.SiteSetting{}).Where("`key` = ?", key).Update("value", value).Error
+}
+
+// GetValue 获取配置值，不存在返回默认值
+func (r *SiteSettingRepo) GetValue(key string, defaultVal string) string {
+	s, err := r.FindByKey(key)
+	if err != nil {
+		return defaultVal
+	}
+	return s.Value
+}
+
+// --- LoginLogRepo ---
+
+func (r *LoginLogRepo) Create(log *model.LoginLog) error {
+	return r.db.Create(log).Error
+}
+
+func (r *LoginLogRepo) List(page, pageSize int) ([]model.LoginLog, int64, error) {
+	var logs []model.LoginLog
+	var total int64
+	r.db.Model(&model.LoginLog{}).Count(&total)
+	err := r.db.Order("created_at DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&logs).Error
+	return logs, total, err
+}
+
+// --- RechargeLogRepo ---
+
+type RechargeLogRepo struct{ db *gorm.DB }
+
+func NewRechargeLogRepo(db *gorm.DB) *RechargeLogRepo {
+	return &RechargeLogRepo{db}
+}
+
+func (r *RechargeLogRepo) Create(log *model.RechargeLog) error {
+	return r.db.Create(log).Error
+}
+
+func (r *RechargeLogRepo) List(page, pageSize int) ([]model.RechargeLog, int64, error) {
+	var logs []model.RechargeLog
+	var total int64
+	r.db.Model(&model.RechargeLog{}).Count(&total)
+	err := r.db.Order("created_at DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&logs).Error
+	return logs, total, err
+}
+
+func (r *RechargeLogRepo) FindByTeamID(teamID uint, page, pageSize int) ([]model.RechargeLog, int64, error) {
+	var logs []model.RechargeLog
+	var total int64
+	r.db.Model(&model.RechargeLog{}).Where("team_id = ?", teamID).Count(&total)
+	err := r.db.Where("team_id = ?", teamID).Order("created_at DESC").
+		Offset((page - 1) * pageSize).
+		Limit(pageSize).
+		Find(&logs).Error
+	return logs, total, err
 }

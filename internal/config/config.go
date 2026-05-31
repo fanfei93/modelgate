@@ -35,7 +35,8 @@ type DatabaseConfig struct {
 type NewAPIConfig struct {
 	BaseURL      string `yaml:"base_url"`
 	AdminKey     string `yaml:"admin_key"`
-	AdminUserID  int    `yaml:"admin_user_id"` // new-api 中 admin key 对应的用户 ID，用于 API 调用时的 New-Api-User 头
+	AdminUserID  int    `yaml:"admin_user_id"` // 管理员用户 ID，用于 API 调用时的用户标识头
+	DatabaseDSN  string `yaml:"database_dsn"`  // 日志数据库 DSN，直连查询日志用（可选，为空则走 HTTP API）
 }
 
 type SMTPConfig struct {

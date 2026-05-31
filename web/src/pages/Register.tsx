@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useSiteConfig } from '../hooks/useSiteConfig';
 import { sendVerificationCode } from '../api/auth';
 
 export default function Register() {
+  const { siteName } = useSiteConfig();
   const [searchParams] = useSearchParams();
   const invitedEmail = searchParams.get('email') || '';
   const isInvited = !!invitedEmail;
@@ -87,7 +89,7 @@ export default function Register() {
         <div className="text-center mb-8">
           <Link to="/" className="inline-block text-2xl font-bold">
             <span className="bg-gradient-to-r from-orange-400 to-red-500 bg-clip-text text-transparent">
-              ModelGate
+              {siteName}
             </span>
           </Link>
           <p className="mt-2 text-gray-500 text-sm">

@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// Client 封装对 new-api 的 HTTP 调用
+// Client 封装对内部模型服务的 HTTP 调用
 type Client struct {
 	BaseURL     string
 	AdminKey    string
-	AdminUserID int // new-api 中 admin key 对应的用户 ID，用于 New-Api-User 头
+	AdminUserID int
 	HTTPClient  *http.Client
 }
 
@@ -30,7 +30,7 @@ func NewClient(baseURL, adminKey string, adminUserID int) *Client {
 	}
 }
 
-// RegisterUser 在 new-api 中注册一个内部用户
+// RegisterUser 在内部服务中注册一个用户
 func (c *Client) RegisterUser(email, password string) (int, error) {
 	body := map[string]string{
 		"username":     email,
@@ -40,7 +40,7 @@ func (c *Client) RegisterUser(email, password string) (int, error) {
 	return c.doRegister(body)
 }
 
-// RegisterUserWithUsername 在 new-api 中注册一个带用户名的内部用户
+// RegisterUserWithUsername 在内部服务中注册一个带用户名的用户
 func (c *Client) RegisterUserWithUsername(username, email, password string) (int, error) {
 	body := map[string]string{
 		"username":     username,
@@ -58,7 +58,7 @@ func (c *Client) doRegister(body map[string]string) (int, error) {
 		bytes.NewReader(data),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("register user: %w", err)
+		return 0, fmt.Errorf("注册用户失败")
 	}
 	defer resp.Body.Close()
 
@@ -70,15 +70,16 @@ func (c *Client) doRegister(body map[string]string) (int, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("decode register response: %w", err)
+		return 0, fmt.Errorf("注册用户失败")
 	}
 	if !result.Success {
-		return 0, fmt.Errorf("new-api register failed: %s", result.Message)
+		log.Printf("[ERROR] 注册用户失败: %s", result.Message)
+		return 0, fmt.Errorf("注册用户失败")
 	}
 	return result.Data.ID, nil
 }
 
-// GetUserToken 获取用户在 new-api 中的 API Token（需 admin 权限）
+// GetUserToken 获取用户的 API Token（需 admin 权限）
 func (c *Client) GetUserToken(userID int) (string, error) {
 	url := fmt.Sprintf("%s/api/user/token?id=%d", c.BaseURL, userID)
 	req, _ := http.NewRequest("GET", url, nil)
@@ -86,7 +87,7 @@ func (c *Client) GetUserToken(userID int) (string, error) {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("get user token: %w", err)
+		return "", fmt.Errorf("获取令牌失败")
 	}
 	defer resp.Body.Close()
 
@@ -96,25 +97,56 @@ func (c *Client) GetUserToken(userID int) (string, error) {
 		Data    string `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode token response: %w", err)
+		return "", fmt.Errorf("获取令牌失败")
 	}
 	if !result.Success {
-		return "", fmt.Errorf("get token failed: %s", result.Message)
+		log.Printf("[ERROR] 获取令牌失败: %s", result.Message)
+		return "", fmt.Errorf("获取令牌失败")
 	}
 	return result.Data, nil
 }
 
-// GetUserInfo 获取 new-api 用户信息（需 admin 权限）
+// UserLogin 通过用户名密码登录，验证凭据是否有效
+// new-api 的 login 接口成功时 data 为对象而非字符串，这里只关心 success 状态
+func (c *Client) UserLogin(username, password string) error {
+	body := map[string]string{
+		"username": username,
+		"password": password,
+	}
+	data, _ := json.Marshal(body)
+	resp, err := c.HTTPClient.Post(
+		c.BaseURL+"/api/user/login",
+		"application/json",
+		bytes.NewReader(data),
+	)
+	if err != nil {
+		return fmt.Errorf("登录验证失败")
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("登录验证失败")
+	}
+	if !result.Success {
+		return fmt.Errorf("登录验证失败")
+	}
+	return nil
+}
+
+// GetUserInfo 获取用户信息（需 admin 权限）
 func (c *Client) GetUserInfo(userID int) (*UserInfo, error) {
 	url := fmt.Sprintf("%s/api/user/%d", c.BaseURL, userID)
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("Authorization", "Bearer "+c.AdminKey)
-	// new-api 的 AdminAuth 中间件要求 New-Api-User 头匹配 admin 用户自身 ID
 	req.Header.Set("New-Api-User", fmt.Sprintf("%d", c.AdminUserID))
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get user info: %w", err)
+		return nil, fmt.Errorf("获取用户信息失败")
 	}
 	defer resp.Body.Close()
 
@@ -124,10 +156,11 @@ func (c *Client) GetUserInfo(userID int) (*UserInfo, error) {
 		Data    UserInfo `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode user info: %w", err)
+		return nil, fmt.Errorf("获取用户信息失败")
 	}
 	if !result.Success {
-		return nil, fmt.Errorf("get user info failed: %s", result.Message)
+		log.Printf("[ERROR] 获取用户信息失败 (userID=%d): %s", userID, result.Message)
+		return nil, fmt.Errorf("获取用户信息失败")
 	}
 	return &result.Data, nil
 }
@@ -139,7 +172,7 @@ type UserInfo struct {
 	Quota    int64  `json:"quota"`
 }
 
-// PricingResponse new-api 定价接口返回结构
+// PricingResponse 模型定价接口返回结构
 type PricingResponse struct {
 	Success    bool                     `json:"success"`
 	Message    string                   `json:"message"`
@@ -167,18 +200,18 @@ type PricingVendor struct {
 	Icon string `json:"icon"`
 }
 
-// GetPricing 获取 new-api 的模型定价信息（公开接口，无需鉴权）
+// GetPricing 获取模型定价信息（公开接口，无需鉴权）
 func (c *Client) GetPricing() (*PricingResponse, error) {
 	url := c.BaseURL + "/api/pricing"
 	resp, err := c.HTTPClient.Get(url)
 	if err != nil {
-		return nil, fmt.Errorf("get pricing: %w", err)
+		return nil, fmt.Errorf("获取模型定价失败")
 	}
 	defer resp.Body.Close()
 
 	var result PricingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode pricing response: %w", err)
+		return nil, fmt.Errorf("获取模型定价失败")
 	}
 	return &result, nil
 }
@@ -201,7 +234,6 @@ func (c *Client) AdminCreateTokenWithQuota(userID int, tokenName string, remainQ
 		body["unlimited_quota"] = *unlimited
 	}
 	data, _ := json.Marshal(body)
-	log.Printf("[INFO] AdminCreateTokenWithQuota request body: %s", string(data))
 	req, _ := http.NewRequest("POST", c.BaseURL+"/api/admin/token/create",
 		bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
@@ -209,7 +241,7 @@ func (c *Client) AdminCreateTokenWithQuota(userID int, tokenName string, remainQ
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return 0, "", fmt.Errorf("admin create token: %w", err)
+		return 0, "", fmt.Errorf("创建令牌失败")
 	}
 	defer resp.Body.Close()
 
@@ -222,10 +254,11 @@ func (c *Client) AdminCreateTokenWithQuota(userID int, tokenName string, remainQ
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, "", fmt.Errorf("decode create token response: %w", err)
+		return 0, "", fmt.Errorf("创建令牌失败")
 	}
 	if !result.Success {
-		return 0, "", fmt.Errorf("create token failed: %s", result.Message)
+		log.Printf("[ERROR] 创建令牌失败: %s", result.Message)
+		return 0, "", fmt.Errorf("创建令牌失败")
 	}
 	return result.Data.ID, result.Data.Key, nil
 }
@@ -244,7 +277,7 @@ func (c *Client) AdminUpdateTokenStatus(tokenID int, status int) error {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("admin update token status: %w", err)
+		return fmt.Errorf("更新令牌状态失败")
 	}
 	defer resp.Body.Close()
 
@@ -253,10 +286,11 @@ func (c *Client) AdminUpdateTokenStatus(tokenID int, status int) error {
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode update token status response: %w", err)
+		return fmt.Errorf("更新令牌状态失败")
 	}
 	if !result.Success {
-		return fmt.Errorf("update token status failed: %s", result.Message)
+		log.Printf("[ERROR] 更新令牌状态失败 (tokenID=%d): %s", tokenID, result.Message)
+		return fmt.Errorf("更新令牌状态失败")
 	}
 	return nil
 }
@@ -273,7 +307,6 @@ func (c *Client) AdminUpdateTokenQuota(tokenID int, remainQuota *int, unlimited 
 		body["unlimited_quota"] = *unlimited
 	}
 	data, _ := json.Marshal(body)
-	log.Printf("[INFO] AdminUpdateTokenQuota request body: %s", string(data))
 	req, _ := http.NewRequest("POST", c.BaseURL+"/api/admin/token/quota",
 		bytes.NewReader(data))
 	req.Header.Set("Content-Type", "application/json")
@@ -281,7 +314,7 @@ func (c *Client) AdminUpdateTokenQuota(tokenID int, remainQuota *int, unlimited 
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("admin update token quota: %w", err)
+		return fmt.Errorf("更新令牌配额失败")
 	}
 	defer resp.Body.Close()
 
@@ -290,15 +323,16 @@ func (c *Client) AdminUpdateTokenQuota(tokenID int, remainQuota *int, unlimited 
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode update token quota response: %w", err)
+		return fmt.Errorf("更新令牌配额失败")
 	}
 	if !result.Success {
-		return fmt.Errorf("update token quota failed: %s", result.Message)
+		log.Printf("[ERROR] 更新令牌配额失败 (tokenID=%d): %s", tokenID, result.Message)
+		return fmt.Errorf("更新令牌配额失败")
 	}
 	return nil
 }
 
-// TokenInfo new-api 返回的 token 信息
+// TokenInfo 返回的 token 信息
 type TokenInfo struct {
 	ID             int    `json:"id"`
 	UserID         int    `json:"user_id"`
@@ -322,7 +356,7 @@ func (c *Client) AdminGetTokenInfo(tokenID int) (*TokenInfo, error) {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("admin get token info: %w", err)
+		return nil, fmt.Errorf("获取令牌信息失败")
 	}
 	defer resp.Body.Close()
 
@@ -332,10 +366,11 @@ func (c *Client) AdminGetTokenInfo(tokenID int) (*TokenInfo, error) {
 		Data    TokenInfo `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode get token info response: %w", err)
+		return nil, fmt.Errorf("获取令牌信息失败")
 	}
 	if !result.Success {
-		return nil, fmt.Errorf("get token info failed: %s", result.Message)
+		log.Printf("[ERROR] 获取令牌信息失败 (tokenID=%d): %s", tokenID, result.Message)
+		return nil, fmt.Errorf("获取令牌信息失败")
 	}
 	return &result.Data, nil
 }
@@ -353,7 +388,7 @@ func (c *Client) AdminDeleteToken(tokenID int) error {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("admin delete token: %w", err)
+		return fmt.Errorf("删除令牌失败")
 	}
 	defer resp.Body.Close()
 
@@ -362,24 +397,25 @@ func (c *Client) AdminDeleteToken(tokenID int) error {
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode delete token response: %w", err)
+		return fmt.Errorf("删除令牌失败")
 	}
 	if !result.Success {
-		return fmt.Errorf("delete token failed: %s", result.Message)
+		log.Printf("[ERROR] 删除令牌失败 (tokenID=%d): %s", tokenID, result.Message)
+		return fmt.Errorf("删除令牌失败")
 	}
 	return nil
 }
 
-// StatusResponse new-api /api/status 返回
+// StatusResponse /api/status 返回
 type StatusResponse struct {
 	QuotaPerUnit float64 `json:"quota_per_unit"`
 }
 
-// GetStatus 获取 new-api 的运行状态信息（公开接口，无需鉴权）
+// GetStatus 获取运行状态信息（公开接口，无需鉴权）
 func (c *Client) GetStatus() (*StatusResponse, error) {
 	resp, err := c.HTTPClient.Get(c.BaseURL + "/api/status")
 	if err != nil {
-		return nil, fmt.Errorf("get status: %w", err)
+		return nil, fmt.Errorf("获取服务状态失败")
 	}
 	defer resp.Body.Close()
 
@@ -388,12 +424,12 @@ func (c *Client) GetStatus() (*StatusResponse, error) {
 		Data    StatusResponse `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode status response: %w", err)
+		return nil, fmt.Errorf("获取服务状态失败")
 	}
 	return &result.Data, nil
 }
 
-// LogItem new-api 调用日志条目
+// LogItem 调用日志条目
 type LogItem struct {
 	ID               int     `json:"id"`
 	UserID           int     `json:"user_id"`
@@ -418,7 +454,6 @@ type LogItem struct {
 }
 
 // AdminUpdateUserQuota 使用管理员权限覆盖用户的总配额（user.Quota）
-// 调用 POST /api/user/manage action=add_quota mode=override
 func (c *Client) AdminUpdateUserQuota(userID int, quota int) error {
 	body := map[string]interface{}{
 		"id":     userID,
@@ -435,7 +470,7 @@ func (c *Client) AdminUpdateUserQuota(userID int, quota int) error {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("admin update user quota: %w", err)
+		return fmt.Errorf("更新用户配额失败")
 	}
 	defer resp.Body.Close()
 
@@ -444,10 +479,11 @@ func (c *Client) AdminUpdateUserQuota(userID int, quota int) error {
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return fmt.Errorf("decode update user quota response: %w", err)
+		return fmt.Errorf("更新用户配额失败")
 	}
 	if !result.Success {
-		return fmt.Errorf("update user quota failed: %s", result.Message)
+		log.Printf("[ERROR] 更新用户配额失败 (userID=%d): %s", userID, result.Message)
+		return fmt.Errorf("更新用户配额失败")
 	}
 	return nil
 }
@@ -459,7 +495,7 @@ func (c *Client) GetLogsByToken(token string) ([]LogItem, error) {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get logs by token: %w", err)
+		return nil, fmt.Errorf("获取日志失败")
 	}
 	defer resp.Body.Close()
 
@@ -469,24 +505,25 @@ func (c *Client) GetLogsByToken(token string) ([]LogItem, error) {
 		Data    []LogItem `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode logs response: %w", err)
+		return nil, fmt.Errorf("获取日志失败")
 	}
 	if !result.Success {
-		return nil, fmt.Errorf("get logs failed: %s", result.Message)
+		log.Printf("[ERROR] 获取日志失败: %s", result.Message)
+		return nil, fmt.Errorf("获取日志失败")
 	}
 	return result.Data, nil
 }
 
 // LogsQuery 调用日志查询参数
 type LogsQuery struct {
-	Username       string // 用户名（new-api 中的用户名）
-	TokenName      string // API Key 名称筛选（new-api 原始 token_name）
-	TokenID        int    // API Key ID 筛选（优先于 TokenName，会通过 AdminGetTokenInfo 查找原始 token_name）
-	ModelName      string // 模型名称筛选
-	StartTimestamp int64  // 起始时间（Unix 秒）
-	EndTimestamp   int64  // 结束时间（Unix 秒）
-	Page           int    // 页码（从 1 开始）
-	PageSize       int    // 每页条数
+	Username       string
+	TokenName      string
+	TokenID        int
+	ModelName      string
+	StartTimestamp int64
+	EndTimestamp   int64
+	Page           int
+	PageSize       int
 }
 
 // PaginatedLogs 分页日志结果
@@ -497,8 +534,7 @@ type PaginatedLogs struct {
 	PageSize int       `json:"page_size"`
 }
 
-// GetLogsByUserID 使用管理员权限查询指定用户的所有调用日志（按 user_id 过滤）
-// 通过 admin API 的 /api/log/ 端点按 username 查询，支持筛选和分页
+// GetLogsByUserID 使用管理员权限查询指定用户的所有调用日志
 func (c *Client) GetLogsByUserID(q LogsQuery) (*PaginatedLogs, error) {
 	if q.Page <= 0 {
 		q.Page = 1
@@ -507,7 +543,7 @@ func (c *Client) GetLogsByUserID(q LogsQuery) (*PaginatedLogs, error) {
 		q.PageSize = 20
 	}
 
-	// 如果指定了 TokenID，通过 AdminGetTokenInfo 获取原始 token_name 用于筛选
+	// 如果指定了 TokenID，获取原始 token_name 用于筛选
 	if q.TokenID > 0 && q.TokenName == "" {
 		tokenInfo, err := c.AdminGetTokenInfo(q.TokenID)
 		if err == nil && tokenInfo != nil {
@@ -539,7 +575,7 @@ func (c *Client) GetLogsByUserID(q LogsQuery) (*PaginatedLogs, error) {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get logs by user id: %w", err)
+		return nil, fmt.Errorf("获取日志失败")
 	}
 	defer resp.Body.Close()
 
@@ -554,10 +590,11 @@ func (c *Client) GetLogsByUserID(q LogsQuery) (*PaginatedLogs, error) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode logs response: %w", err)
+		return nil, fmt.Errorf("获取日志失败")
 	}
 	if !result.Success {
-		return nil, fmt.Errorf("get logs failed: %s", result.Message)
+		log.Printf("[ERROR] 获取日志失败: %s", result.Message)
+		return nil, fmt.Errorf("获取日志失败")
 	}
 
 	return &PaginatedLogs{

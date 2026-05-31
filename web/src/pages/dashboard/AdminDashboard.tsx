@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import * as adminApi from '../../api/admin';
-import type { AdminTeamItem } from '../../types/api';
+import type { AdminTeamItem, SiteSetting, RechargeLog } from '../../types/api';
 
 function formatBalance(cents: number) {
   return (cents / 100).toFixed(2);
@@ -18,9 +18,44 @@ export default function AdminDashboard() {
   // Recharge modal
   const [rechargeSlug, setRechargeSlug] = useState<string | null>(null);
   const [rechargeAmount, setRechargeAmount] = useState('');
+  const [rechargeRemark, setRechargeRemark] = useState('');
   const [rechargeLoading, setRechargeLoading] = useState(false);
   const [rechargeError, setRechargeError] = useState('');
   const [rechargeSuccess, setRechargeSuccess] = useState('');
+
+  // Site settings
+  const [settings, setSettings] = useState<SiteSetting[]>([]);
+  const [settingsLoading, setSettingsLoading] = useState(true);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editingValue, setEditingValue] = useState('');
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsMsg, setSettingsMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const fetchSettings = useCallback(async () => {
+    try {
+      setSettingsLoading(true);
+      const res = await adminApi.listSettings();
+      setSettings(res.data.data || []);
+    } catch { /* ignore */ }
+    finally { setSettingsLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchSettings(); }, [fetchSettings]);
+
+  const handleSaveSetting = async (key: string) => {
+    setSettingsSaving(true);
+    setSettingsMsg(null);
+    try {
+      await adminApi.updateSetting(key, editingValue);
+      setSettingsMsg({ type: 'success', text: '配置已保存' });
+      setEditingKey(null);
+      fetchSettings();
+    } catch {
+      setSettingsMsg({ type: 'error', text: '保存失败' });
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
 
   const fetchTeams = useCallback(async () => {
     try {
@@ -51,10 +86,12 @@ export default function AdminDashboard() {
     setRechargeSuccess('');
     setRechargeLoading(true);
     try {
-      await adminApi.rechargeTeam(rechargeSlug, amount);
+      await adminApi.rechargeTeam(rechargeSlug, amount, rechargeRemark);
       setRechargeSuccess(`成功为 ${rechargeSlug} 充值 ¥${formatCentsToYuan(amount)}`);
       setRechargeAmount('');
+      setRechargeRemark('');
       fetchTeams();
+      fetchRechargeLogs();
     } catch (err: unknown) {
       const ae = err as { response?: { data?: { error?: string } } };
       setRechargeError(ae?.response?.data?.error || '充值失败');
@@ -66,9 +103,29 @@ export default function AdminDashboard() {
   const openRecharge = (slug: string) => {
     setRechargeSlug(slug);
     setRechargeAmount('');
+    setRechargeRemark('');
     setRechargeError('');
     setRechargeSuccess('');
   };
+
+  // Recharge logs
+  const [rechargeLogs, setRechargeLogs] = useState<RechargeLog[]>([]);
+  const [rechargeLogsTotal, setRechargeLogsTotal] = useState(0);
+  const [rechargeLogsPage, setRechargeLogsPage] = useState(1);
+  const [rechargeLogsLoading, setRechargeLogsLoading] = useState(false);
+
+  const fetchRechargeLogs = useCallback(async (page = 1) => {
+    try {
+      setRechargeLogsLoading(true);
+      const res = await adminApi.listRechargeLogs(page, 10);
+      setRechargeLogs(res.data.data || []);
+      setRechargeLogsTotal(res.data.total || 0);
+      setRechargeLogsPage(page);
+    } catch { /* ignore */ }
+    finally { setRechargeLogsLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchRechargeLogs(); }, [fetchRechargeLogs]);
 
   if (loading) {
     return (
@@ -174,6 +231,157 @@ export default function AdminDashboard() {
         </table>
       </div>
 
+      {/* Recharge Logs */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden mb-6">
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-base font-bold text-gray-900">充值日志</h2>
+          <button
+            onClick={() => fetchRechargeLogs(rechargeLogsPage)}
+            className="text-xs font-medium text-blue-600 hover:text-blue-700 transition-colors"
+          >
+            刷新
+          </button>
+        </div>
+        {rechargeLogsLoading ? (
+          <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" /></div>
+        ) : (
+          <>
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr className="border-b border-gray-200">
+                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">时间</th>
+                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">团队</th>
+                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">操作人</th>
+                  <th className="text-right px-5 py-3 text-xs font-medium text-gray-500 uppercase">充值金额</th>
+                  <th className="text-right px-5 py-3 text-xs font-medium text-gray-500 uppercase">充值前余额</th>
+                  <th className="text-right px-5 py-3 text-xs font-medium text-gray-500 uppercase">充值后余额</th>
+                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">IP</th>
+                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-500 uppercase">备注</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {rechargeLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="text-center py-12 text-gray-400 text-sm">暂无充值记录</td>
+                  </tr>
+                ) : (
+                  rechargeLogs.map((log) => (
+                    <tr key={log.id} className="hover:bg-gray-50/50">
+                      <td className="px-5 py-3 text-xs text-gray-500 whitespace-nowrap">{log.created_at}</td>
+                      <td className="px-5 py-3 text-sm text-gray-900">{log.team_name}</td>
+                      <td className="px-5 py-3 text-sm text-gray-600">{log.operator_name}</td>
+                      <td className="px-5 py-3 text-right text-sm font-semibold text-green-600">+¥{formatBalance(log.amount)}</td>
+                      <td className="px-5 py-3 text-right text-sm text-gray-500">¥{formatBalance(log.balance_before)}</td>
+                      <td className="px-5 py-3 text-right text-sm font-medium text-blue-600">¥{formatBalance(log.balance_after)}</td>
+                      <td className="px-5 py-3 text-xs text-gray-400">{log.ip}</td>
+                      <td className="px-5 py-3 text-xs text-gray-500 max-w-[160px] truncate">{log.remark || '-'}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+            {rechargeLogsTotal > 10 && (
+              <div className="flex items-center justify-between px-5 py-3 border-t border-gray-100">
+                <span className="text-xs text-gray-500">
+                  共 {rechargeLogsTotal} 条记录，第 {rechargeLogsPage} 页
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => fetchRechargeLogs(rechargeLogsPage - 1)}
+                    disabled={rechargeLogsPage <= 1}
+                    className="rounded-lg border border-gray-300 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    上一页
+                  </button>
+                  <button
+                    onClick={() => fetchRechargeLogs(rechargeLogsPage + 1)}
+                    disabled={rechargeLogsPage * 10 >= rechargeLogsTotal}
+                    className="rounded-lg border border-gray-300 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+                  >
+                    下一页
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Site Settings */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 mb-6">
+        <h2 className="text-lg font-bold text-gray-900 mb-4">站点配置</h2>
+        {settingsMsg && (
+          <div className={`mb-4 rounded-lg px-4 py-2.5 text-sm ${settingsMsg.type === 'success' ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-red-50 border border-red-200 text-red-600'}`}>
+            {settingsMsg.text}
+          </div>
+        )}
+        {settingsLoading ? (
+          <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" /></div>
+        ) : (
+          <div className="space-y-3">
+            {settings.map((s) => (
+              <div key={s.key} className="flex items-center justify-between px-4 py-3 rounded-lg bg-gray-50">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900">{s.comment || s.key}</p>
+                  <p className="text-xs text-gray-400 mt-0.5">键名: {s.key}</p>
+                </div>
+                <div className="flex items-center gap-3 ml-4">
+                  {editingKey === s.key ? (
+                    <>
+                      {s.key === 'menu_arena_visible' || s.key === 'menu_docs_visible' ? (
+                        <select
+                          value={editingValue}
+                          onChange={(e) => setEditingValue(e.target.value)}
+                          className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="true">显示</option>
+                          <option value="false">隐藏</option>
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          value={editingValue}
+                          onChange={(e) => setEditingValue(e.target.value)}
+                          className="w-64 rounded-lg border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          autoFocus
+                        />
+                      )}
+                      <button
+                        onClick={() => handleSaveSetting(s.key)}
+                        disabled={settingsSaving}
+                        className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        保存
+                      </button>
+                      <button
+                        onClick={() => setEditingKey(null)}
+                        className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
+                      >
+                        取消
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-sm text-gray-700 max-w-[200px] truncate">
+                        {s.key === 'menu_arena_visible' || s.key === 'menu_docs_visible'
+                          ? (s.value === 'true' ? '显示' : '隐藏')
+                          : s.value}
+                      </span>
+                      <button
+                        onClick={() => { setEditingKey(s.key); setEditingValue(s.value); }}
+                        className="text-xs font-medium text-blue-600 hover:text-blue-700 transition-colors"
+                      >
+                        编辑
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Recharge Modal */}
       {rechargeSlug && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -212,6 +420,17 @@ export default function AdminDashboard() {
                   min="0.01"
                   step="0.01"
                   autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">备注 <span className="text-gray-400 font-normal">(可选)</span></label>
+                <input
+                  type="text"
+                  value={rechargeRemark}
+                  onChange={(e) => setRechargeRemark(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="充值原因或备注"
+                  maxLength={200}
                 />
               </div>
               <div className="flex gap-3 pt-2">

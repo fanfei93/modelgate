@@ -62,7 +62,7 @@ func (h *AuthHandler) SendVerificationCode(c *gin.Context) {
 	}
 
 	if err := h.emailService.SendVerificationCode(req.Email); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "发送验证码失败: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "发送验证码失败，请稍后重试"})
 		return
 	}
 
@@ -79,21 +79,21 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Code     string `json:"code" binding:"required,len=6"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: " + err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
 		return
 	}
 
 	// 校验邮箱验证码
 	if h.emailService.IsConfigured() {
 		if err := h.emailService.VerifyCode(req.Email, req.Code); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "验证码错误或已过期"})
 			return
 		}
 	}
 
 	user, err := h.authService.Register(req.Username, req.Email, req.Password)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "注册失败，请稍后重试"})
 		return
 	}
 
@@ -129,9 +129,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	user, err := h.authService.Login(req.Username, req.Password)
+	user, err := h.authService.Login(req.Username, req.Password, c.ClientIP(), c.GetHeader("User-Agent"))
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
+		switch err {
+		case service.ErrUserDisabled, service.ErrBindingTampered:
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
+		}
 		return
 	}
 

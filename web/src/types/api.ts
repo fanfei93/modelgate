@@ -127,6 +127,23 @@ export interface LogKey {
   name: string;
 }
 
+export interface SiteSetting {
+  key: string;
+  value: string;
+  comment: string;
+}
+
+export interface LoginLog {
+  id: number;
+  user_id: number;
+  username: string;
+  ip: string;
+  user_agent: string;
+  success: boolean;
+  reason: string;
+  created_at: string;
+}
+
 export interface UserAPIKey {
   id: number;
   user_id: number;
@@ -136,4 +153,18 @@ export interface UserAPIKey {
   status: number;     // 1: 启用, 2: 禁用
   created_at: string;
   updated_at: string;
+}
+
+export interface RechargeLog {
+  id: number;
+  team_id: number;
+  team_name: string;
+  operator_id: number;
+  operator_name: string;
+  amount: number;
+  balance_before: number;
+  balance_after: number;
+  remark: string;
+  ip: string;
+  created_at: string;
 }

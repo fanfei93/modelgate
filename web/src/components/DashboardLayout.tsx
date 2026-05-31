@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { useSiteConfig } from '../hooks/useSiteConfig';
 
 const navItems = [
   {
@@ -34,6 +35,7 @@ const navItems = [
 
 export default function DashboardLayout() {
   const { user, logout } = useAuth();
+  const { siteName, menuArenaVisible, menuDocsVisible, menuDocsUrl } = useSiteConfig();
   const navigate = useNavigate();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -57,8 +59,8 @@ export default function DashboardLayout() {
 
   const topLinks = [
     { to: '/models', label: '模型' },
-    { to: '/arena', label: '操练场' },
-    { to: '/docs', label: '文档' },
+    ...(menuArenaVisible ? [{ to: '/arena', label: '操练场' }] : []),
+    ...(menuDocsVisible ? [{ to: menuDocsUrl, label: '文档', external: menuDocsUrl.startsWith('http') }] : []),
   ];
 
   return (
@@ -70,7 +72,7 @@ export default function DashboardLayout() {
           <Link to="/" className="flex items-center gap-3">
             <span className="text-xl font-bold">
               <span className="bg-gradient-to-r from-orange-400 to-red-500 bg-clip-text text-transparent">
-                ModelGate
+                {siteName}
               </span>
             </span>
           </Link>
@@ -78,13 +80,25 @@ export default function DashboardLayout() {
           {/* 右侧: 导航链接 + 头像 */}
           <div className="flex items-center gap-6">
             {topLinks.map((link) => (
-              <Link
-                key={link.to}
-                to={link.to}
-                className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
-              >
-                {link.label}
-              </Link>
+              link.external ? (
+                <a
+                  key={link.to}
+                  href={link.to}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
+                >
+                  {link.label}
+                </a>
+              ) : (
+                <Link
+                  key={link.to}
+                  to={link.to}
+                  className="text-sm font-medium text-gray-600 hover:text-gray-900 transition-colors"
+                >
+                  {link.label}
+                </Link>
+              )
             ))}
 
             {/* 头像下拉 */}
@@ -138,8 +152,7 @@ export default function DashboardLayout() {
             ))}
             {isAdmin && (
               <NavLink
-                to="/dashboard/admin"
-                end
+                to="/dashboard/admin/teams"
                 className={({ isActive }) =>
                   `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                     isActive

@@ -16,6 +16,7 @@ new_api:
   base_url: "http://localhost:3000"
   admin_key: "6f4ef279609eff8802a9d74726b5b4c4"
   admin_user_id: 3    # new-api 中 admin key 对应的用户 ID
+  database_dsn: "root:123456@tcp(localhost:3306)/new-api-db?charset=utf8mb4&parseTime=True&loc=Local"  # new-api 数据库，直连查询日志
 
 # 超管邮箱列表
 admin_emails:

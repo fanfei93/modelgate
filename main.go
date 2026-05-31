@@ -58,10 +58,16 @@ func main() {
 		&model.QuotaAllocation{},
 		&model.VerificationCode{},
 		&model.UserAPIKey{},
+		&model.SiteSetting{},
+		&model.LoginLog{},
+		&model.RechargeLog{},
 	); err != nil {
 		log.Fatalf("数据库迁移失败: %v", err)
 	}
 	log.Println("数据库迁移完成")
+
+	// 初始化默认站点配置
+	initDefaultSettings(db)
 
 	// 初始化各层
 	userRepo := repository.NewUserRepo(db)
@@ -71,15 +77,19 @@ func main() {
 	invitationRepo := repository.NewInvitationRepo(db)
 	quotaAllocRepo := repository.NewQuotaAllocationRepo(db)
 	vcRepo := repository.NewVerificationCodeRepo(db)
+	settingRepo := repository.NewSiteSettingRepo(db)
+	loginLogRepo := repository.NewLoginLogRepo(db)
+	rechargeLogRepo := repository.NewRechargeLogRepo(db)
 
 	newAPIClient := newapi.NewClient(cfg.NewAPI.BaseURL, cfg.NewAPI.AdminKey, cfg.NewAPI.AdminUserID)
+	logDB := newapi.NewLogDB(cfg.NewAPI.DatabaseDSN)
 	emailService := service.NewEmailService(cfg.SMTP, vcRepo)
 
-	authService := service.NewAuthService(userRepo, newAPIClient)
-	teamService := service.NewTeamService(db, teamRepo, memberRepo, userRepo, userAPIKeyRepo, invitationRepo, quotaAllocRepo, newAPIClient, emailService, cfg.Server.BaseURL)
+	authService := service.NewAuthService(userRepo, newAPIClient, loginLogRepo)
+	teamService := service.NewTeamService(db, teamRepo, memberRepo, userRepo, userAPIKeyRepo, invitationRepo, quotaAllocRepo, newAPIClient, logDB, emailService, cfg.Server.BaseURL)
 	teamService.InitQuotaPerUnit() // 从 new-api 动态获取 QuotaPerUnit 换算因子
 
-	adminService := service.NewAdminService(db, teamRepo, memberRepo)
+	adminService := service.NewAdminService(db, teamRepo, memberRepo, settingRepo, loginLogRepo, rechargeLogRepo)
 
 	authHandler := handler.NewAuthHandler(authService, teamService, emailService, cfg.JWT.Secret, cfg.JWT.ExpireHours, cfg.AdminEmails)
 	teamHandler := handler.NewTeamHandler(teamService)
@@ -110,6 +120,16 @@ func main() {
 			return
 		}
 		c.JSON(200, pricing)
+	})
+
+	// 站点配置（公开接口，前端渲染导航栏等使用）
+	r.GET("/api/site-settings", func(c *gin.Context) {
+		settings, err := adminService.ListSettings()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "获取站点配置失败"})
+			return
+		}
+		c.JSON(200, gin.H{"data": settings})
 	})
 
 	// 认证路由（无需 JWT）
@@ -166,6 +186,10 @@ func main() {
 		{
 			admin.GET("/teams", adminHandler.ListTeams)
 			admin.POST("/teams/:slug/recharge", adminHandler.RechargeTeam)
+			admin.GET("/settings", adminHandler.ListSettings)
+			admin.PUT("/settings/:key", adminHandler.UpdateSetting)
+			admin.GET("/login-logs", adminHandler.ListLoginLogs)
+			admin.GET("/recharge-logs", adminHandler.ListRechargeLogs)
 		}
 	}
 
@@ -205,6 +229,23 @@ func initDB(cfg *config.Config) (*gorm.DB, error) {
 		return gorm.Open(postgres.Open(cfg.Database.DSN), gormCfg)
 	default:
 		return gorm.Open(sqlite.Open(cfg.Database.DSN), gormCfg)
+	}
+}
+
+// initDefaultSettings 初始化默认站点配置项（仅在首次运行时插入）
+func initDefaultSettings(db *gorm.DB) {
+	defaults := []model.SiteSetting{
+		{Key: "site_name", Value: "ModelGate", Comment: "站点名称"},
+		{Key: "menu_arena_visible", Value: "true", Comment: "是否显示操练场菜单"},
+		{Key: "menu_docs_visible", Value: "true", Comment: "是否显示文档菜单"},
+		{Key: "menu_docs_url", Value: "/docs", Comment: "文档菜单跳转链接"},
+	}
+	for _, d := range defaults {
+		var count int64
+		db.Model(&model.SiteSetting{}).Where("`key` = ?", d.Key).Count(&count)
+		if count == 0 {
+			db.Create(&d)
+		}
 	}
 }
 
